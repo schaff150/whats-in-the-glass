@@ -1,5 +1,133 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>What’s in the Glass?</title></head>
-<body><h1>What’s in the Glass?</h1></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#4b2e22">
+  <meta name="description" content="A private, LAN-local spirits guide.">
+  <title>What’s in the Glass?</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" href="/static/icons/favicon.ico">
+  <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="phone">
+    <header class="topbar">
+      <img class="app-icon" src="/static/icons/icon-192.png" alt="">
+      <div class="brand"><strong>What’s in the Glass?</strong><span>Private spirits guide</span></div>
+    </header>
+
+    <main>
+      <section id="homeView" class="view active" aria-labelledby="homeTitle">
+        <div class="hero">
+          <span class="eyebrow">A word from Hamish</span>
+          <h1 id="homeTitle">Right then.<br>What are you drinking?</h1>
+          <p>Give me the bottle and I’ll tell you what matters—not what the marketing department fancied saying.</p>
+        </div>
+
+        <span class="section-label">Who’s drinking?</span>
+        <div class="people" role="group" aria-label="Choose drinker">
+          <button class="person active" type="button" data-drinker="Me" aria-pressed="true">Me</button>
+          <button class="person" type="button" data-drinker="Wife" aria-pressed="false">Wife</button>
+          <button class="person" type="button" data-drinker="Other" aria-pressed="false">Other</button>
+        </div>
+        <div class="guest-row" id="guestRow" hidden>
+          <label for="guestName">Guest name <span>(optional)</span></label>
+          <input id="guestName" name="guest_name" autocomplete="name" maxlength="80">
+        </div>
+
+        <form class="entry" id="analysisForm">
+          <label for="drinkName">Bottle name</label>
+          <textarea id="drinkName" name="drink_name" placeholder="Type the name on the bottle…"></textarea>
+          <button class="primary" type="submit">Tell me about it <span aria-hidden="true">→</span></button>
+        </form>
+
+        <div class="or" aria-hidden="true">or</div>
+        <label class="camera" for="photoInput">
+          <span aria-hidden="true">▣</span> Photograph the label
+        </label>
+        <input class="file-input" id="photoInput" name="photo" type="file" accept="image/jpeg,image/png,image/webp" capture="environment">
+        <p class="photo-help">JPEG, PNG or WebP, up to 5 MiB. Photo analysis is currently identification-pending.</p>
+        <p class="status" id="appStatus" role="status" aria-live="polite"></p>
+
+        <section class="recent-mini" aria-labelledby="lastGlassTitle">
+          <div class="recent-title">
+            <h2 class="section-label" id="lastGlassTitle">Last glass</h2>
+            <button type="button" data-view="historyView">See all</button>
+          </div>
+          <div id="lastGlass" class="mini-card empty">No glasses saved yet.</div>
+        </section>
+      </section>
+
+      <section id="resultView" class="view" aria-labelledby="resultTitle" hidden>
+        <div class="backline">
+          <button class="back" type="button" data-view="homeView" aria-label="Back to home">‹</button>
+          <span class="eyebrow">Your glass</span>
+        </div>
+        <div class="result-head">
+          <h1 id="resultTitle"></h1>
+          <div class="meta" id="resultMeta"></div>
+        </div>
+
+        <section class="voice-card" aria-labelledby="audioTitle">
+          <div class="voice-top">
+            <button class="audio-button" id="audioButton" type="button" aria-label="Hamish narration unavailable" disabled>▶</button>
+            <div class="voice-copy">
+              <h2 id="audioTitle">Hear it from Hamish</h2>
+              <p>Hamish narration is the next integration. Audio playback is not available yet.</p>
+            </div>
+          </div>
+        </section>
+
+        <article class="story">
+          <h2>Nice pour. Here’s what’s in your glass.</h2>
+          <section><h3>The briefing</h3><p id="resultOverview" class="lead"></p></section>
+          <section><h3>Why it matters</h3><p id="resultContext"></p></section>
+          <section><h3>In the glass</h3><p id="resultTasting"></p></section>
+        </article>
+        <details class="sources">
+          <summary id="sourceSummary">Research sources</summary>
+          <ul id="sourceList"></ul>
+        </details>
+
+        <section class="rating" aria-labelledby="ratingTitle">
+          <h2 id="ratingTitle">How was it?</h2>
+          <p>Both parts are optional. Save a 1–5 rating, one note, or both.</p>
+          <div class="stars" role="group" aria-label="Rating from one to five">
+            <button class="star" type="button" data-rating="1" aria-label="1 star" aria-pressed="false">★</button>
+            <button class="star" type="button" data-rating="2" aria-label="2 stars" aria-pressed="false">★</button>
+            <button class="star" type="button" data-rating="3" aria-label="3 stars" aria-pressed="false">★</button>
+            <button class="star" type="button" data-rating="4" aria-label="4 stars" aria-pressed="false">★</button>
+            <button class="star" type="button" data-rating="5" aria-label="5 stars" aria-pressed="false">★</button>
+          </div>
+          <label for="feedbackNotes">Likes or dislikes <span>(optional)</span></label>
+          <textarea id="feedbackNotes" maxlength="1000" placeholder="What did you like or dislike?"></textarea>
+          <button class="save" id="saveFeedback" type="button">Save this glass</button>
+          <p class="saved-state" id="savedState" role="status" aria-live="polite"></p>
+        </section>
+      </section>
+
+      <section id="historyView" class="view" aria-labelledby="historyTitle" hidden>
+        <div class="history-head">
+          <span class="eyebrow">Nothing obsessive</span>
+          <h1 id="historyTitle">Recent glasses</h1>
+          <p>Just enough history to remember what was worth another pour.</p>
+        </div>
+        <p id="historyStatus" class="status" role="status" aria-live="polite">Loading recent glasses…</p>
+        <div id="historyList" class="history-list"></div>
+      </section>
+    </main>
+
+    <nav class="bottom" aria-label="Main navigation">
+      <button class="nav active" type="button" data-view="homeView" aria-current="page"><span aria-hidden="true">⌂</span>Home</button>
+      <button class="nav" type="button" data-view="historyView"><span aria-hidden="true">◷</span>Recent</button>
+    </nav>
+
+    <div class="loader" id="loader" hidden aria-hidden="true">
+      <div><img src="/static/icons/icon-192.png" alt=""><strong>Having a proper look…</strong><p>Preparing an honest demo briefing.</p></div>
+    </div>
+  </div>
+</body>
 </html>

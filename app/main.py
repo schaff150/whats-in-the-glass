@@ -31,6 +31,12 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "healthy", "service": "whats-in-the-glass"}
 
+    @app.get("/service-worker.js", include_in_schema=False)
+    def service_worker() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "service-worker.js", media_type="text/javascript"
+        )
+
     @app.get("/", include_in_schema=False)
     def root() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
