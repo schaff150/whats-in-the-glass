@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.models import AnalysisCreate, AnalysisRecord, FeedbackCreate, FeedbackRecord
@@ -50,7 +50,7 @@ class Database:
             )
 
     def save_analysis(self, analysis: AnalysisCreate) -> AnalysisRecord:
-        created_at = datetime.now(timezone.utc)
+        created_at = datetime.now(UTC)
         with self.connect() as connection:
             cursor = connection.execute(
                 """
