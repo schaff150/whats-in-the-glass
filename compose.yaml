@@ -1,0 +1,26 @@
+services:
+  whats-in-the-glass:
+    build:
+      context: .
+    ports:
+      - "8787:8787"
+    environment:
+      WITG_DATA_DIR: /data
+    volumes:
+      - witg-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3).read()
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  witg-data:
