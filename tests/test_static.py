@@ -61,6 +61,8 @@ def test_manifest_icons_and_service_worker_are_served(tmp_path):
                 "icon-180.png",
                 "icon-192.png",
                 "icon-512.png",
+                "icon-maskable-192.png",
+                "icon-maskable-512.png",
                 "favicon.ico",
             ]
         }
@@ -71,14 +73,26 @@ def test_manifest_icons_and_service_worker_are_served(tmp_path):
     assert manifest["start_url"] == "/"
     assert manifest["display"] == "standalone"
     assert {icon["sizes"] for icon in manifest["icons"]} >= {"192x192", "512x512"}
+    maskable_icons = [
+        icon for icon in manifest["icons"] if "maskable" in icon.get("purpose", "")
+    ]
+    assert {icon["src"] for icon in maskable_icons} == {
+        "/static/icons/icon-maskable-192.png",
+        "/static/icons/icon-maskable-512.png",
+    }
     assert all(response.status_code == 200 for response in icon_responses.values())
+    assert icon_responses["icon-maskable-192.png"].content[25] in {2, 3}
 
     assert worker_response.status_code == 200
     worker = worker_response.text
     assert '"/static/app.js"' in worker
     assert '"/static/styles.css"' in worker
     assert 'url.pathname.startsWith("/api/")' in worker
-    assert "cache.put" not in worker
+    assert "fetch(event.request)" in worker
+    assert "cache.put" in worker
+    assert worker.index("fetch(event.request)") < worker.index(
+        "caches.match(event.request)"
+    )
     with TestClient(create_app(data_dir=tmp_path)) as client:
         script = client.get("/static/app.js").text
     assert "navigator.serviceWorker.register" in script
@@ -92,3 +106,11 @@ def test_service_worker_is_registered_at_the_app_scope(tmp_path):
     assert worker_response.status_code == 200
     assert worker_response.headers["content-type"].startswith("text/javascript")
     assert 'navigator.serviceWorker.register("/service-worker.js")' in script
+
+
+def test_mobile_navigation_stays_above_scrollable_content(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        styles = client.get("/static/styles.css").text
+
+    bottom_rule = styles.split(".bottom{", 1)[1].split("}", 1)[0]
+    assert "z-index:" in bottom_rule

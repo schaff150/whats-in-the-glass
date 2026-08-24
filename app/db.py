@@ -12,6 +12,7 @@ class Database:
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -77,7 +78,9 @@ class Database:
                 ),
             )
             analysis_id = cursor.lastrowid
-        return AnalysisRecord(id=analysis_id, created_at=created_at, **analysis.model_dump())
+        return AnalysisRecord(
+            id=analysis_id, created_at=created_at, **analysis.model_dump()
+        )
 
     def save_feedback(
         self, analysis_id: int, feedback: FeedbackCreate
@@ -94,7 +97,7 @@ class Database:
             )
         return FeedbackRecord(analysis_id=analysis_id, **feedback.model_dump())
 
-    def list_analyses(self) -> list[AnalysisRecord]:
+    def list_analyses(self, limit: int = 50, offset: int = 0) -> list[AnalysisRecord]:
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -102,7 +105,9 @@ class Database:
                 FROM analyses
                 LEFT JOIN feedback ON feedback.analysis_id = analyses.id
                 ORDER BY analyses.created_at DESC, analyses.id DESC
-                """
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
             ).fetchall()
         return [self._analysis_from_row(row) for row in rows]
 

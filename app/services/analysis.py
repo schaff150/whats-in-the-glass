@@ -15,15 +15,26 @@ class AnalysisContent:
     sources: list[str]
 
 
+@dataclass(frozen=True)
+class PhotoInput:
+    filename: str | None
+    content_type: str
+    content: bytes
+
+
 class AnalysisService(Protocol):
-    def analyze(self, drink_name: str | None, photo_supplied: bool) -> AnalysisContent: ...
+    def analyze(
+        self, drink_name: str | None, photo: PhotoInput | None
+    ) -> AnalysisContent: ...
 
 
 class DemoAnalysisService:
     """Deterministic placeholder; it performs no AI or web research."""
 
-    def analyze(self, drink_name: str | None, photo_supplied: bool) -> AnalysisContent:
-        if photo_supplied and not drink_name:
+    def analyze(
+        self, drink_name: str | None, photo: PhotoInput | None
+    ) -> AnalysisContent:
+        if photo is not None and not drink_name:
             return AnalysisContent(
                 identified_title="Bottle photograph — identification pending",
                 region="Not identified",

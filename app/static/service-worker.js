@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "witg-shell-v1";
+const CACHE_NAME = "witg-shell-v3";
 const SHELL_ASSETS = [
   "/",
   "/static/styles.css",
@@ -8,6 +8,8 @@ const SHELL_ASSETS = [
   "/static/manifest.webmanifest",
   "/static/icons/icon-192.png",
   "/static/icons/icon-512.png",
+  "/static/icons/icon-maskable-192.png",
+  "/static/icons/icon-maskable-512.png",
 ];
 
 self.addEventListener("install", (event) => {
@@ -36,6 +38,16 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (url.pathname === "/" || url.pathname.startsWith("/static/")) {
-    event.respondWith(caches.match(event.request).then((cached) => cached || fetch(event.request)));
+    event.respondWith(
+      fetch(event.request)
+        .then(async (response) => {
+          if (response.ok) {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(event.request, response.clone());
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request)),
+    );
   }
 });

@@ -39,9 +39,12 @@ def test_operator_and_architecture_docs_cover_runbook_and_demo_boundaries():
     assert "Docker is not installed on Dadbase" in readme
     assert "no real model" in readme.lower()
     assert "ElevenLabs" in readme
+    assert "HTTPS" in readme
 
     assert "AnalysisService" in architecture
+    assert "PhotoInput" in architecture
     assert "SQLite" in architecture
     assert "WITG_DATA_DIR" in architecture
     assert "LAN-local" in architecture
     assert "network-first" in architecture
+    assert "HTTPS" in architecture

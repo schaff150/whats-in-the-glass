@@ -5,8 +5,9 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import create_api_router
+from app.api import MAX_REQUEST_BYTES, create_api_router
 from app.db import Database
+from app.middleware import RequestBodyLimitMiddleware
 from app.services.analysis import AnalysisService, DemoAnalysisService
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -21,6 +22,7 @@ def create_app(
     database.initialize()
 
     app = FastAPI(title="What’s in the Glass?")
+    app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
     app.state.data_dir = resolved_data_dir
     app.state.database = database
     app.state.analysis_service = analysis_service or DemoAnalysisService()

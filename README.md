@@ -45,16 +45,16 @@ By default, SQLite is created at `data/witg.sqlite3`. Override the data director
 WITG_DATA_DIR=C:/path/to/witg-data uv run uvicorn app.main:app --host 0.0.0.0 --port 8787
 ```
 
-For LAN use, allow TCP port 8787 only on trusted/private networks and browse to `http://<host-lan-ip>:8787/`. This application does not provide authentication or TLS; do not expose it directly to the public internet.
+For LAN use, allow TCP port 8787 only on trusted/private networks and browse to `http://<host-lan-ip>:8787/`. The ordinary web interface and photo file chooser work over LAN HTTP, but browsers require a secure context for reliable service-worker registration and full installable-PWA behavior. Put the production phone-facing deployment behind **HTTPS** with a locally trusted certificate or an authenticated private-network reverse proxy before judging Add-to-Home-Screen installation. This application does not provide authentication or TLS itself; do not expose it directly to the public internet.
 
 ## API summary
 
 - `GET /api/health` — service status
 - `POST /api/analyses` — multipart fields `drinker`, optional `guest_name`, optional `drink_name`, optional `photo`
 - `POST /api/analyses/{id}/feedback` — JSON `rating` and `notes`
-- `GET /api/history` — newest analyses first, joined with feedback
+- `GET /api/history?limit=50&offset=0` — newest analyses first, joined with feedback; `limit` is bounded to 1–100
 
-An analysis requires text or a photograph. Valid photographs are JPEG, PNG, or WebP and no larger than 5 MiB. Drinkers are `Me`, `Wife`, or `Other`; a guest name is retained only for `Other`. Ratings, when supplied, must be 1–5.
+An analysis requires text or a photograph. Valid photographs are non-empty JPEG, PNG, or WebP files with matching signatures and no larger than 5 MiB. Analysis request bodies are capped before multipart parsing completes. Drinkers are `Me`, `Wife`, or `Other`; a guest name is retained only for `Other`. Bottle names are limited to 300 characters, guest names to 80, and feedback notes to 1000. Ratings, when supplied, must be 1–5.
 
 ## Docker Compose
 
@@ -80,7 +80,7 @@ docker compose down --volumes
 
 ## PWA behavior
 
-The manifest, icons, Apple touch icon, favicon, and root-scoped service worker are served by FastAPI. The service worker pre-caches only the static application shell. API requests remain network-first and are never placed in the shell cache, so history and feedback are not presented as fresh when the server is unavailable.
+The manifest, regular and opaque full-bleed maskable icons, Apple touch icon, favicon, and root-scoped service worker are served by FastAPI. The service worker pre-caches the static shell, revalidates shell assets from the network, and falls back to cache only when offline. API requests remain network-first and are never placed in the shell cache, so history and feedback are not presented as fresh when the server is unavailable.
 
 ## Next integration seam
 

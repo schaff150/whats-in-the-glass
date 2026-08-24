@@ -22,11 +22,11 @@ Browser / installed PWA
 ## Request flow
 
 1. `POST /api/analyses` accepts `Me`, `Wife`, or `Other`, optional guest name, and at least one of bottle text or a photograph.
-2. The API validates supported image MIME types and reads at most 5 MiB plus one byte before accepting an upload.
-3. The narrow `AnalysisService` protocol returns briefing content. `DemoAnalysisService` is deterministic and explicitly does no AI inference, image recognition, search, or TTS.
+2. An ASGI request-body guard caps all API write requests before downstream parsing begins. The API then validates supported image MIME types, non-empty matching file signatures, and the 5 MiB file limit. Accepted bytes, filename, and media type are wrapped in `PhotoInput` and passed to the analysis boundary; the demo service deliberately does not inspect them.
+3. The narrow `AnalysisService` protocol receives normalized bottle text plus optional `PhotoInput` and returns briefing content. `DemoAnalysisService` is deterministic and explicitly does no AI inference, image recognition, search, or TTS.
 4. The API combines the submission metadata and service result into `AnalysisCreate` and persists it through `Database`.
 5. `POST /api/analyses/{id}/feedback` validates an optional 1–5 rating and optional note, then stores one feedback row per analysis.
-6. `GET /api/history` returns analyses newest first with feedback joined.
+6. `GET /api/history` returns analyses newest first through bounded `limit`/`offset` pagination.
 
 The application factory accepts a replacement `AnalysisService`, keeping future network integrations outside route and persistence code.
 
@@ -40,7 +40,9 @@ The database path is `${WITG_DATA_DIR}/witg.sqlite3`; local default is `data/`, 
 
 The interface is semantic static HTML with Leather Ledger CSS and plain JavaScript. API values are assigned with `textContent` or appended through DOM construction; dynamic data is never passed to HTML parsing. All primary controls meet a 44px minimum touch target.
 
-The root-scoped service worker pre-caches a fixed list of shell files. It does not dynamically populate the cache. Requests under `/api/` bypass interception and remain **network-first**, preventing stale analysis, rating, or history responses from masquerading as current state.
+The root-scoped service worker pre-caches a fixed list of shell files. Runtime shell requests revalidate from the network first, refresh the cache after successful responses, and fall back to cached files only when the network fails. Requests under `/api/` bypass interception and remain **network-first**, preventing stale analysis, rating, or history responses from masquerading as current state.
+
+Browsers require a secure context for service workers and reliable installable-PWA behavior. Localhost qualifies during development, but a phone opening the DadServer LAN address should use **HTTPS** through a locally trusted certificate or private reverse proxy. Plain LAN HTTP remains a usable web interface but is not the finished installable-app deployment.
 
 The application has no authentication, authorization, or TLS termination. Its trust boundary is the private LAN; public exposure requires a separate authenticated reverse proxy and an explicit security review.
 

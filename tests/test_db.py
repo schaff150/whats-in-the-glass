@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 from pydantic import ValidationError
 
@@ -64,6 +66,17 @@ def test_lists_newest_analyses_first_with_feedback(tmp_path):
     assert history[0].rating is None
     assert history[1].rating == 4
     assert history[1].notes == "Would pour again"
+
+
+def test_foreign_keys_prevent_orphan_feedback(tmp_path):
+    database = Database(tmp_path / "witg.sqlite3")
+    database.initialize()
+
+    with database.connect() as connection:
+        assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.IntegrityError):
+        database.save_feedback(999, FeedbackCreate(rating=4, notes="Orphan"))
 
 
 @pytest.mark.parametrize("rating", [0, 6])
