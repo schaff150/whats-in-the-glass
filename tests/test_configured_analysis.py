@@ -50,7 +50,7 @@ def test_configured_text_analysis_uses_chat_completions_and_never_fabricates_sou
                                     "overview": "A concise overview.",
                                     "context": "A concise context.",
                                     "tasting_notes": "Pear and malt.",
-                                    "sources": ["model invented citation"],
+                                    "sources": "Model supplied an unverified source",
                                 }
                             )
                         }

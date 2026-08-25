@@ -119,7 +119,7 @@ class _AnalysisPayload(BaseModel):
     overview: str = Field(min_length=1, max_length=5000)
     context: str = Field(min_length=1, max_length=5000)
     tasting_notes: str = Field(min_length=1, max_length=5000)
-    sources: list[str] = Field(default_factory=list, max_length=50)
+    sources: object = None
 
 
 class ConfiguredAnalysisService:
