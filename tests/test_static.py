@@ -12,6 +12,9 @@ def test_home_shell_is_accessible_and_text_first(tmp_path):
     assert '<link rel="stylesheet" href="/static/styles.css">' in html
     assert '<script src="/static/app.js" defer></script>' in html
     assert 'aria-label="Choose drinker"' in html
+    assert 'data-drinker="Me" aria-pressed="true">me</button>' in html
+    assert 'data-drinker="Wife" aria-pressed="false">Gin</button>' in html
+    assert 'data-drinker="Other" aria-pressed="false">guest</button>' in html
     assert '<label for="drinkName">Bottle name</label>' in html
     assert html.index("Tell me about it") < html.index("Photograph the label")
     assert 'accept="image/jpeg,image/png,image/webp"' in html
@@ -35,6 +38,18 @@ def test_client_uses_real_analysis_api_and_safe_dom_rendering(tmp_path):
     assert "innerHTML" not in script
     assert "guestRow.hidden" in script
     assert 'photoInput.addEventListener("change"' in script
+
+
+def test_client_displays_profile_labels_in_history(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        script = client.get("/static/app.js").text
+
+    assert 'Me: "me"' in script
+    assert 'Wife: "Gin"' in script
+    assert 'Other: "guest"' in script
+    assert "function displayDrinker(analysis)" in script
+    assert "const drinker = displayDrinker(latest);" in script
+    assert "const who = displayDrinker(analysis);" in script
 
 
 def test_client_fetches_feedback_and_recent_history(tmp_path):

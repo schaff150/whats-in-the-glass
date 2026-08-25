@@ -8,6 +8,12 @@ const state = {
   currentAudio: null,
 };
 
+const drinkerDisplayNames = {
+  Me: "me",
+  Wife: "Gin",
+  Other: "guest",
+};
+
 const analysisForm = document.getElementById("analysisForm");
 const drinkName = document.getElementById("drinkName");
 const guestRow = document.getElementById("guestRow");
@@ -139,6 +145,10 @@ function updateStars() {
   });
 }
 
+function displayDrinker(analysis) {
+  return analysis.guest_name || drinkerDisplayNames[analysis.drinker] || analysis.drinker;
+}
+
 function renderLastGlass(history) {
   const lastGlass = document.getElementById("lastGlass");
   lastGlass.replaceChildren();
@@ -152,14 +162,14 @@ function renderLastGlass(history) {
   addTextElement(lastGlass, "span", "bottle-mark", "");
   const copy = addTextElement(lastGlass, "div", "mini-copy", "");
   addTextElement(copy, "strong", "", latest.identified_title);
-  const drinker = latest.guest_name || latest.drinker;
+  const drinker = displayDrinker(latest);
   addTextElement(copy, "span", "", `${drinker} · ${latest.style}`);
   const score = latest.rating ? `${"★".repeat(latest.rating)}${"☆".repeat(5 - latest.rating)}` : "Not rated";
   addTextElement(lastGlass, "span", "score", score);
 }
 
 function historyDescription(analysis) {
-  const who = analysis.guest_name || analysis.drinker;
+  const who = displayDrinker(analysis);
   const score = analysis.rating ? `${analysis.rating}/5` : "Not rated yet";
   const detail = analysis.notes || analysis.style;
   return `${who} · ${score} · ${detail}`;
