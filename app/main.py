@@ -80,7 +80,7 @@ def create_app(
     analysis_service: AnalysisService | None = None,
     secret_key: str | bytes | None = None,
     admin_password_record: str | None = None,
-    allow_insecure_credentials: bool = False,
+    allow_insecure_credentials: bool = True,
     provider_transport: httpx.BaseTransport | None = None,
     provider_resolver=socket.getaddrinfo,
     model_host_allowlist: set[str] | None = None,
@@ -99,8 +99,6 @@ def create_app(
         admin_password_record = _read_setting_file(
             "WITG_ADMIN_PASSWORD_FILE", binary=False
         )
-    if os.environ.get("WITG_ALLOW_INSECURE_CREDENTIALS", "").casefold() == "true":
-        allow_insecure_credentials = True
     database = Database(resolved_data_dir / "witg.sqlite3", secret_key=secret_key)
     database.initialize()
     admin_auth = AdminAuth(admin_password_record, secret_key)
@@ -222,18 +220,6 @@ def create_app(
             )
         return session
 
-    def require_secret_transport(request: Request, carries_secret: bool) -> None:
-        if carries_secret and not (
-            request_is_https(request) or allow_insecure_credentials
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "https_required",
-                    "message": "HTTPS is required for credentials.",
-                },
-            )
-
     def probe_api_key(
         probe: ProviderProbeRequest,
         saved_url: str,
@@ -268,14 +254,6 @@ def create_app(
         login: AdminLoginRequest, request: Request, response: Response
     ) -> dict[str, str | bool]:
         validate_exact_origin(request)
-        if not request_is_https(request) and not allow_insecure_credentials:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "https_required",
-                    "message": "HTTPS is required for credentials.",
-                },
-            )
         client_id = request.client.host if request.client else "unknown"
         try:
             token, session = admin_auth.login(login.password, client_id)
@@ -323,16 +301,6 @@ def create_app(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="The HTTP model endpoint is not operator-allowlisted.",
                 ) from error
-        if (update.api_key or update.clear_api_key) and not (
-            request_is_https(request) or allow_insecure_credentials
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "https_required",
-                    "message": "HTTPS is required for credentials.",
-                },
-            )
         try:
             settings = database.update_model_settings(
                 display_name=update.display_name,
@@ -351,16 +319,6 @@ def create_app(
     @app.put("/api/settings/voice")
     def save_voice_settings(update: VoiceSettingsUpdate, request: Request):
         require_admin_mutation(request)
-        if (update.api_key or update.clear_api_key) and not (
-            request_is_https(request) or allow_insecure_credentials
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "https_required",
-                    "message": "HTTPS is required for credentials.",
-                },
-            )
         try:
             settings = database.update_voice_settings(
                 base_url=update.base_url,
@@ -381,7 +339,6 @@ def create_app(
     @app.post("/api/settings/model/models")
     def discover_models(probe: ProviderProbeRequest, request: Request):
         require_admin_mutation(request)
-        require_secret_transport(request, bool(probe.api_key))
         settings = database.get_settings().model
         try:
             target_url, api_key = probe_api_key(
@@ -431,13 +388,11 @@ def create_app(
     @app.post("/api/settings/voice/voices")
     def discover_voices(probe: ProviderProbeRequest, request: Request):
         require_admin_mutation(request)
-        require_secret_transport(request, bool(probe.api_key))
         return {"voices": _discover_voices(probe)}
 
     @app.post("/api/settings/voice/models")
     def discover_voice_models(probe: ProviderProbeRequest, request: Request):
         require_admin_mutation(request)
-        require_secret_transport(request, bool(probe.api_key))
         settings = database.get_settings().voice
         try:
             target_url, api_key = probe_api_key(
@@ -464,14 +419,12 @@ def create_app(
     @app.post("/api/settings/voice/test")
     def test_voice_connection(probe: ProviderProbeRequest, request: Request):
         require_admin_mutation(request)
-        require_secret_transport(request, bool(probe.api_key))
         voices = _discover_voices(probe)
         return {"ok": True, "voices_count": len(voices)}
 
     @app.post("/api/settings/voice/preview")
     def preview_voice(preview: VoicePreviewRequest, request: Request):
         require_admin_mutation(request)
-        require_secret_transport(request, bool(preview.api_key))
         settings = database.get_settings().voice
         voice_id = preview.voice_id or settings.voice_id
         if not voice_id:

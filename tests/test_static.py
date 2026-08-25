@@ -134,7 +134,7 @@ def test_connections_ui_is_mobile_accessible_write_only_and_csp_safe(tmp_path):
     assert 'id="refreshVoiceModels"' in html
     assert 'list="ttsModelOptions"' in html
     assert 'id="previewVoice"' in html
-    assert "HTTPS is required before entering real credentials" in html
+    assert "Trusted LAN mode" in html
     for endpoint in [
         "/api/admin/login",
         "/api/admin/logout",

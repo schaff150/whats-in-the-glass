@@ -34,7 +34,7 @@ Every settings, discovery, connection-test, and voice-preview route requires an 
 
 The plaintext passphrase is never stored. Login verification uses `hashlib.scrypt` and constant-time digest comparison. Failed attempts are bounded in memory. Successful login creates an in-memory session plus an HMAC-signed expiring cookie. The cookie is HttpOnly and SameSite=Strict, and Secure only when the ASGI scheme is HTTPS. The browser retains only the current CSRF token in JavaScript memory; it stores neither passwords nor tokens in localStorage/IndexedDB.
 
-Admin mutations require the signed cookie, exact Origin/Host, and CSRF header. Login validates Origin. Admin/settings responses are `Cache-Control: no-store`. Plain HTTP credential entry fails with `https_required` unless the operator explicitly sets `WITG_ALLOW_INSECURE_CREDENTIALS=true`; that override is a temporary trusted-LAN compromise, not hardening.
+Admin mutations require the signed cookie, exact Origin/Host, and CSRF header. Login validates Origin. Admin/settings responses are `Cache-Control: no-store`. This deployment accepts administrator-entered credentials over its trusted LAN HTTP URL.
 
 Trusted proxy handling is explicit at both layers. Uvicorn reads `FORWARDED_ALLOW_IPS`; the app installs `ProxyHeadersMiddleware` with `WITG_TRUSTED_PROXY_IPS`. DadServer’s verified Docker host source is exactly `172.17.0.1`, never `*`. Only that trusted proxy can promote the ASGI scheme from forwarded HTTPS or replace `request.client` with a safely forwarded Tailscale address. Direct LAN clients keep their actual address, so spoofed forwarded headers cannot unlock credential writes. Login throttling keys by that trusted client identity; when the trusted proxy omits a client address, requests share the documented `unknown` proxy bucket.
 
@@ -100,6 +100,6 @@ Security middleware adds CSP (`frame-ancestors 'none'`, no inline script permiss
 
 ## Deployment trust boundary
 
-The application provides no TLS termination and no per-user authorization for ordinary household analysis/history routes. **HTTPS is required before real credential entry**, normally through a locally trusted private reverse proxy. Insecure HTTP mode is an explicit short-lived trusted-LAN exception. Public exposure requires authentication for the whole app, rate limiting, trusted-proxy configuration, and a separate security review.
+The application provides no TLS termination and no per-user authorization for ordinary household analysis/history routes. This deployment accepts credentials over trusted LAN HTTP by user direction. Public exposure still requires authentication for the whole app, rate limiting, trusted-proxy configuration, and a separate security review.
 
 ChatGPT account OAuth, standardized web search, public internet exposure, and multi-user credentials remain deferred.

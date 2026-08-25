@@ -23,7 +23,7 @@ def login(client, password):
     )
 
 
-def test_admin_login_rejects_plain_http_by_default(tmp_path):
+def test_admin_login_accepts_plain_http_on_the_trusted_lan(tmp_path):
     app = create_app(
         data_dir=tmp_path,
         secret_key=MASTER_KEY,
@@ -33,17 +33,12 @@ def test_admin_login_rejects_plain_http_by_default(tmp_path):
     with TestClient(app) as client:
         response = login(client, "correct horse battery staple")
 
-    assert response.status_code == 403
-    assert response.json() == {
-        "detail": {
-            "code": "https_required",
-            "message": "HTTPS is required for credentials.",
-        }
-    }
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
     assert "correct horse" not in response.text
 
 
-def test_forwarded_proto_header_cannot_bypass_plain_http_credential_gate(tmp_path):
+def test_untrusted_forwarded_proto_does_not_change_plain_http_login_cookie(tmp_path):
     app = create_app(
         data_dir=tmp_path,
         secret_key=MASTER_KEY,
@@ -60,8 +55,8 @@ def test_forwarded_proto_header_cannot_bypass_plain_http_credential_gate(tmp_pat
             },
         )
 
-    assert response.status_code == 403
-    assert response.json()["detail"]["code"] == "https_required"
+    assert response.status_code == 200
+    assert "Secure" not in response.headers["set-cookie"]
 
 
 def test_exact_trusted_tailscale_proxy_can_supply_https_and_client_identity(tmp_path):

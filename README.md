@@ -16,9 +16,7 @@ ChatGPT subscription/account login is **not** supported. ChatGPT OAuth needs a s
 
 ## Security boundary
 
-**HTTPS is required before entering real credentials.** The application does not terminate TLS. Put it behind a locally trusted HTTPS reverse proxy on the private LAN. Do not expose it directly to the public internet.
-
-By default, admin login and credential writes fail closed over HTTP with `https_required`. `WITG_ALLOW_INSECURE_CREDENTIALS=true` is an explicit temporary override for a fully trusted LAN during setup; it is not equivalent to TLS and must not be used for public or untrusted networks. Credentials still traverse that HTTP connection in cleartext.
+This is a **trusted-LAN deployment**. Connections accepts administrator-entered provider credentials over the app’s HTTP URL. Do not expose the container to an untrusted network or the public internet.
 
 For Tailscale Serve, trust only the exact host-side proxy source. On DadServer’s verified default Docker bridge, Tailscale Serve forwarding from the host enters the container from `172.17.0.1`. Set both Uvicorn’s `FORWARDED_ALLOW_IPS` and the app’s `WITG_TRUSTED_PROXY_IPS` to that exact IP (or an explicitly reviewed CIDR), never `*`. The Compose default is operator-overridable:
 
