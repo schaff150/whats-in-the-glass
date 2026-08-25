@@ -6,6 +6,8 @@ services:
       - "8787:8787"
     environment:
       WITG_DATA_DIR: /data
+      FORWARDED_ALLOW_IPS: ${WITG_TRUSTED_PROXY_IPS:-172.17.0.1}
+      WITG_TRUSTED_PROXY_IPS: ${WITG_TRUSTED_PROXY_IPS:-172.17.0.1}
     volumes:
       - witg-data:/data
     restart: unless-stopped

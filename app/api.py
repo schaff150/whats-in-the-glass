@@ -1,8 +1,18 @@
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 
 from app.db import Database
+from app.limits import PerClientRateLimiter, RateLimitExceeded
 from app.models import (
     AnalysisCreate,
     AnalysisRecord,
@@ -10,6 +20,7 @@ from app.models import (
     FeedbackCreate,
     FeedbackRecord,
 )
+from app.providers import ProviderCapacityError, ProviderError, ProviderRateLimitError
 from app.services.analysis import AnalysisService, PhotoInput
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -32,7 +43,9 @@ def has_valid_image_signature(content_type: str, content: bytes) -> bool:
 
 
 def create_api_router(
-    database: Database, analysis_service: AnalysisService
+    database: Database,
+    analysis_service: AnalysisService,
+    analysis_limiter: PerClientRateLimiter,
 ) -> APIRouter:
     router = APIRouter(prefix="/api")
 
@@ -42,11 +55,20 @@ def create_api_router(
         status_code=status.HTTP_201_CREATED,
     )
     def create_analysis(
+        request: Request,
         drinker: Annotated[Drinker, Form()],
         drink_name: Annotated[str | None, Form(max_length=300)] = None,
         guest_name: Annotated[str | None, Form(max_length=80)] = None,
         photo: Annotated[UploadFile | None, File()] = None,
     ) -> AnalysisRecord:
+        client_id = request.client.host if request.client else "unknown"
+        try:
+            analysis_limiter.check(client_id)
+        except RateLimitExceeded as error:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Analysis rate limit exceeded. Try again later.",
+            ) from error
         drink_name = drink_name.strip() if drink_name else None
         guest_name = guest_name.strip() if drinker == "Other" and guest_name else None
         if not drink_name and photo is None:
@@ -77,7 +99,18 @@ def create_api_router(
                 content_type=photo.content_type or "",
                 content=photo_bytes,
             )
-        content = analysis_service.analyze(drink_name, photo=photo_input)
+        try:
+            content = analysis_service.analyze(drink_name, photo=photo_input)
+        except (ProviderCapacityError, ProviderRateLimitError) as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="The configured model is temporarily busy.",
+            ) from error
+        except ProviderError as error:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="The configured model could not produce a valid analysis.",
+            ) from error
         return database.save_analysis(
             AnalysisCreate(
                 drinker=drinker,

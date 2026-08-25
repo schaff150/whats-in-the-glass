@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "witg-shell-v3";
+const CACHE_NAME = "witg-shell-v4";
 const SHELL_ASSETS = [
   "/",
   "/static/styles.css",
@@ -31,7 +31,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith("/api/")) {
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/audio/")) {
     return;
   }
   if (url.origin !== self.location.origin) {

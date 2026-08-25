@@ -1,14 +1,76 @@
+import base64
 import json
+import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.models import AnalysisCreate, AnalysisRecord, FeedbackCreate, FeedbackRecord
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+from app.models import (
+    AnalysisCreate,
+    AnalysisRecord,
+    FeedbackCreate,
+    FeedbackRecord,
+    ModelSettingsView,
+    SettingsView,
+    VoiceSettingsView,
+)
+
+
+class SecretConfigurationError(RuntimeError):
+    pass
 
 
 class Database:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, secret_key: str | bytes | None = None):
         self.path = Path(path)
+        self._secret_key = self._normalize_secret_key(secret_key)
+
+    @staticmethod
+    def _normalize_secret_key(secret_key: str | bytes | None) -> bytes | None:
+        if not secret_key:
+            return None
+        value = secret_key.encode() if isinstance(secret_key, str) else secret_key
+        if len(value) == 32:
+            return value
+        try:
+            decoded = base64.b64decode(value, altchars=b"-_", validate=True)
+        except (ValueError, TypeError):
+            decoded = b""
+        if len(decoded) != 32:
+            raise ValueError("The provider master key must contain exactly 32 bytes.")
+        return decoded
+
+    def _encrypt_secret(self, value: str, field: str) -> bytes:
+        if self._secret_key is None:
+            raise SecretConfigurationError(
+                "Secret storage is unavailable until WITG_SECRET_KEY_FILE is configured."
+            )
+        nonce = os.urandom(12)
+        aad = f"connection:1:{field}:v1".encode()
+        return (
+            b"v1:"
+            + nonce
+            + AESGCM(self._secret_key).encrypt(nonce, value.encode(), aad)
+        )
+
+    def _decrypt_secret(self, encrypted: bytes, field: str) -> str:
+        if self._secret_key is None:
+            raise SecretConfigurationError(
+                "Secret storage is unavailable until WITG_SECRET_KEY_FILE is configured."
+            )
+        if not encrypted.startswith(b"v1:") or len(encrypted) < 32:
+            raise SecretConfigurationError("Stored credentials could not be decrypted.")
+        nonce = encrypted[3:15]
+        aad = f"connection:1:{field}:v1".encode()
+        try:
+            return AESGCM(self._secret_key).decrypt(nonce, encrypted[15:], aad).decode()
+        except (InvalidTag, UnicodeDecodeError) as error:
+            raise SecretConfigurationError(
+                "Stored credentials cannot be decrypted with the provider master key."
+            ) from error
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -49,6 +111,212 @@ class Database:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS connection_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    model_provider TEXT NOT NULL,
+                    model_display_name TEXT NOT NULL,
+                    model_base_url TEXT NOT NULL,
+                    model_id TEXT,
+                    model_api_key_encrypted BLOB,
+                    voice_provider TEXT NOT NULL,
+                    voice_display_name TEXT NOT NULL,
+                    voice_base_url TEXT NOT NULL,
+                    voice_id TEXT,
+                    voice_name TEXT,
+                    voice_api_key_encrypted BLOB,
+                    tts_model_id TEXT NOT NULL,
+                    output_format TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO connection_settings (
+                    id, model_provider, model_display_name, model_base_url,
+                    voice_provider, voice_display_name, voice_base_url,
+                    tts_model_id, output_format
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "openai_compatible",
+                    "OpenAI-compatible",
+                    "https://api.openai.com/v1",
+                    "elevenlabs",
+                    "ElevenLabs",
+                    "https://api.elevenlabs.io",
+                    "eleven_multilingual_v2",
+                    "mp3_44100_128",
+                ),
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS narrations (
+                    token TEXT PRIMARY KEY,
+                    analysis_id INTEGER NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (analysis_id, fingerprint),
+                    FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
+                )
+                """
+            )
+
+    def get_settings(self) -> SettingsView:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM connection_settings WHERE id = 1"
+            ).fetchone()
+        return SettingsView(
+            model=ModelSettingsView(
+                provider=row["model_provider"],
+                display_name=row["model_display_name"],
+                base_url=row["model_base_url"],
+                model_id=row["model_id"],
+                api_key_configured=row["model_api_key_encrypted"] is not None,
+            ),
+            voice=VoiceSettingsView(
+                provider=row["voice_provider"],
+                display_name=row["voice_display_name"],
+                base_url=row["voice_base_url"],
+                voice_id=row["voice_id"],
+                voice_name=row["voice_name"],
+                tts_model_id=row["tts_model_id"],
+                output_format=row["output_format"],
+                api_key_configured=row["voice_api_key_encrypted"] is not None,
+            ),
+        )
+
+    def update_model_settings(
+        self,
+        *,
+        display_name: str,
+        base_url: str,
+        model_id: str | None,
+        api_key: str | None = None,
+        clear_api_key: bool = False,
+    ) -> SettingsView:
+        if api_key and clear_api_key:
+            raise ValueError("A provider key cannot be replaced and cleared together.")
+        encrypted_key = None
+        replace_key = bool(api_key)
+        if replace_key:
+            encrypted_key = self._encrypt_secret(api_key, "model_api_key")
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT model_provider, model_base_url FROM connection_settings WHERE id = 1"
+            ).fetchone()
+            endpoint_changed = (
+                current["model_provider"] != "openai_compatible"
+                or current["model_base_url"] != base_url
+            )
+            connection.execute(
+                """
+                UPDATE connection_settings SET
+                    model_display_name = ?, model_base_url = ?, model_id = ?
+                WHERE id = 1
+                """,
+                (display_name, base_url, model_id),
+            )
+            if replace_key or clear_api_key or endpoint_changed:
+                connection.execute(
+                    "UPDATE connection_settings SET model_api_key_encrypted = ? WHERE id = 1",
+                    (encrypted_key,),
+                )
+        return self.get_settings()
+
+    def get_model_api_key(self) -> str | None:
+        with self.connect() as connection:
+            encrypted = connection.execute(
+                "SELECT model_api_key_encrypted FROM connection_settings WHERE id = 1"
+            ).fetchone()[0]
+        if encrypted is None:
+            return None
+        return self._decrypt_secret(encrypted, "model_api_key")
+
+    def update_voice_settings(
+        self,
+        *,
+        base_url: str,
+        voice_id: str | None,
+        voice_name: str | None,
+        tts_model_id: str,
+        output_format: str,
+        api_key: str | None = None,
+        clear_api_key: bool = False,
+    ) -> SettingsView:
+        if api_key and clear_api_key:
+            raise ValueError("A provider key cannot be replaced and cleared together.")
+        encrypted_key = (
+            self._encrypt_secret(api_key, "voice_api_key") if api_key else None
+        )
+        with self.connect() as connection:
+            current_url = connection.execute(
+                "SELECT voice_base_url FROM connection_settings WHERE id = 1"
+            ).fetchone()[0]
+            connection.execute(
+                """
+                UPDATE connection_settings SET voice_base_url = ?, voice_id = ?,
+                    voice_name = ?, tts_model_id = ?, output_format = ?
+                WHERE id = 1
+                """,
+                (base_url, voice_id, voice_name, tts_model_id, output_format),
+            )
+            if api_key or clear_api_key or current_url != base_url:
+                connection.execute(
+                    "UPDATE connection_settings SET voice_api_key_encrypted = ? WHERE id = 1",
+                    (encrypted_key,),
+                )
+        return self.get_settings()
+
+    def get_voice_api_key(self) -> str | None:
+        with self.connect() as connection:
+            encrypted = connection.execute(
+                "SELECT voice_api_key_encrypted FROM connection_settings WHERE id = 1"
+            ).fetchone()[0]
+        if encrypted is None:
+            return None
+        return self._decrypt_secret(encrypted, "voice_api_key")
+
+    def get_narration(self, analysis_id: int, fingerprint: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM narrations WHERE analysis_id = ? AND fingerprint = ?",
+                (analysis_id, fingerprint),
+            ).fetchone()
+
+    def get_narration_by_token(self, token: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT * FROM narrations WHERE token = ?", (token,)
+            ).fetchone()
+
+    def save_narration(
+        self,
+        *,
+        token: str,
+        analysis_id: int,
+        fingerprint: str,
+        file_name: str,
+    ) -> sqlite3.Row:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO narrations (
+                    token, analysis_id, fingerprint, file_name, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    token,
+                    analysis_id,
+                    fingerprint,
+                    file_name,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+        return self.get_narration(analysis_id, fingerprint)
 
     def save_analysis(self, analysis: AnalysisCreate) -> AnalysisRecord:
         created_at = datetime.now(UTC)

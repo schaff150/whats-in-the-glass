@@ -49,7 +49,7 @@
           <span aria-hidden="true">▣</span> Photograph the label
         </label>
         <input class="file-input" id="photoInput" name="photo" type="file" accept="image/jpeg,image/png,image/webp" capture="environment">
-        <p class="photo-help">JPEG, PNG or WebP, up to 5 MiB. Photo analysis is currently identification-pending.</p>
+        <p class="photo-help">JPEG, PNG or WebP, up to 5 MiB. A configured multimodal model can inspect the label; demo mode accepts the photo without claiming identification.</p>
         <p class="status" id="appStatus" role="status" aria-live="polite"></p>
 
         <section class="recent-mini" aria-labelledby="lastGlassTitle">
@@ -73,10 +73,10 @@
 
         <section class="voice-card" aria-labelledby="audioTitle">
           <div class="voice-top">
-            <button class="audio-button" id="audioButton" type="button" aria-label="Hamish narration unavailable" disabled>▶</button>
+            <button class="audio-button" id="audioButton" type="button" aria-label="Generate and play narration" disabled>▶</button>
             <div class="voice-copy">
               <h2 id="audioTitle">Hear it from Hamish</h2>
-              <p>Hamish narration is the next integration. Audio playback is not available yet.</p>
+              <p id="audioStatus">Choose a voice in Connections, then generate narration on demand.</p>
             </div>
           </div>
         </section>
@@ -118,15 +118,94 @@
         <p id="historyStatus" class="status" role="status" aria-live="polite">Loading recent glasses…</p>
         <div id="historyList" class="history-list"></div>
       </section>
+
+      <section id="connectionsView" class="view connections" aria-labelledby="connectionsTitle" hidden>
+        <div class="history-head">
+          <span class="eyebrow">Private provider setup</span>
+          <h1 id="connectionsTitle">Connections</h1>
+          <p>Manage the model and voice used by this household app.</p>
+        </div>
+        <aside class="security-warning" role="note">
+          <strong>HTTPS is required before entering real credentials.</strong>
+          Plain HTTP is only an explicit temporary trusted-LAN compromise.
+        </aside>
+
+        <section id="adminLoginPanel" class="connection-card" aria-labelledby="adminLoginTitle">
+          <h2 id="adminLoginTitle">Unlock Connections</h2>
+          <form id="adminLoginForm">
+            <label for="adminPassword">Admin passphrase</label>
+            <input id="adminPassword" type="password" autocomplete="current-password" maxlength="1024" required>
+            <button class="primary" type="submit">Unlock</button>
+          </form>
+          <p id="adminStatus" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <div id="connectionsUnlocked" hidden>
+          <div class="connection-actions"><span>Admin session unlocked</span><button id="adminLogout" type="button">Lock</button></div>
+
+          <form id="modelSettingsForm" class="connection-card">
+            <span class="eyebrow">Model provider</span><h2>OpenAI-compatible</h2>
+            <label for="modelDisplayName">Display name</label>
+            <input id="modelDisplayName" maxlength="100" required>
+            <label for="modelBaseUrl">Base URL</label>
+            <input id="modelBaseUrl" type="url" inputmode="url" required>
+            <label for="modelApiKey">API key <span>(write-only)</span></label>
+            <input id="modelApiKey" type="password" autocomplete="off" maxlength="4096">
+            <p class="field-help">Blank preserves the saved key. Changing the endpoint clears it unless a replacement is supplied.</p>
+            <button id="clearModelKey" class="secondary" type="button">Clear saved model key</button>
+            <label for="modelId">Selected or manual model</label>
+            <input id="modelId" list="modelOptions" maxlength="200" placeholder="Choose or type a model ID">
+            <datalist id="modelOptions"></datalist>
+            <div class="button-row">
+              <button id="refreshModels" class="secondary" type="button">Refresh models</button>
+              <button id="testModel" class="secondary" type="button">Test connection</button>
+            </div>
+            <button class="primary" type="submit">Save model settings</button>
+            <p id="modelStatus" class="status" role="status" aria-live="polite"></p>
+          </form>
+
+          <form id="voiceSettingsForm" class="connection-card">
+            <span class="eyebrow">Voice provider</span><h2>ElevenLabs</h2>
+            <label for="voiceBaseUrl">Base URL</label>
+            <select id="voiceBaseUrl">
+              <option value="https://api.elevenlabs.io">Global</option>
+              <option value="https://api.us.elevenlabs.io">United States</option>
+              <option value="https://api.eu.residency.elevenlabs.io">EU residency</option>
+              <option value="https://api.in.residency.elevenlabs.io">India residency</option>
+              <option value="https://api.sg.residency.elevenlabs.io">Singapore residency</option>
+            </select>
+            <label for="voiceApiKey">API key <span>(write-only)</span></label>
+            <input id="voiceApiKey" type="password" autocomplete="off" maxlength="4096">
+            <p class="field-help">Blank preserves the saved key. Changing the endpoint clears it unless a replacement is supplied.</p>
+            <button id="clearVoiceKey" class="secondary" type="button">Clear saved voice key</button>
+            <label for="voiceId">Voice</label>
+            <select id="voiceId"></select>
+            <label for="ttsModelId">TTS model</label>
+            <input id="ttsModelId" list="ttsModelOptions" value="eleven_multilingual_v2" maxlength="200" required>
+            <datalist id="ttsModelOptions"></datalist>
+            <label for="outputFormat">Output format</label>
+            <select id="outputFormat"><option value="mp3_44100_128">MP3 44.1 kHz / 128 kbps</option></select>
+            <div class="button-row">
+              <button id="refreshVoices" class="secondary" type="button">Refresh voices</button>
+              <button id="refreshVoiceModels" class="secondary" type="button">Refresh TTS models</button>
+              <button id="testVoice" class="secondary" type="button">Test connection</button>
+              <button id="previewVoice" class="secondary" type="button">Preview voice</button>
+            </div>
+            <button class="primary" type="submit">Save voice settings</button>
+            <p id="voiceStatus" class="status" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
     </main>
 
     <nav class="bottom" aria-label="Main navigation">
       <button class="nav active" type="button" data-view="homeView" aria-current="page"><span aria-hidden="true">⌂</span>Home</button>
       <button class="nav" type="button" data-view="historyView"><span aria-hidden="true">◷</span>Recent</button>
+      <button class="nav" type="button" data-view="connectionsView"><span aria-hidden="true">⚙</span>Connections</button>
     </nav>
 
     <div class="loader" id="loader" hidden aria-hidden="true">
-      <div><img src="/static/icons/icon-192.png" alt=""><strong>Having a proper look…</strong><p>Preparing an honest demo briefing.</p></div>
+      <div><img src="/static/icons/icon-192.png" alt=""><strong>Having a proper look…</strong><p>Preparing your briefing.</p></div>
     </div>
   </div>
 </body>

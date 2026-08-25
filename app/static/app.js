@@ -4,6 +4,8 @@ const state = {
   drinker: "Me",
   currentAnalysis: null,
   rating: null,
+  csrfToken: null,
+  currentAudio: null,
 };
 
 const analysisForm = document.getElementById("analysisForm");
@@ -43,6 +45,9 @@ function errorMessage(payload, fallback) {
   if (typeof payload?.detail === "string") {
     return payload.detail;
   }
+  if (typeof payload?.detail?.message === "string") {
+    return payload.detail.message;
+  }
   if (Array.isArray(payload?.detail) && payload.detail.length > 0) {
     return payload.detail.map((item) => item.msg).join(" ");
   }
@@ -79,12 +84,15 @@ function renderAnalysis(analysis) {
   });
   document.getElementById("sourceSummary").textContent = analysis.sources.length
     ? `Research sources · ${analysis.sources.length}`
-    : "Research sources · none in demo";
+    : "No grounded sources";
 
   state.rating = analysis.rating;
   document.getElementById("feedbackNotes").value = analysis.notes || "";
   document.getElementById("savedState").textContent = "";
   updateStars();
+  const audioButton = document.getElementById("audioButton");
+  audioButton.disabled = false;
+  document.getElementById("audioStatus").textContent = "Generate narration on demand using your selected voice.";
   showView("resultView");
 }
 
@@ -230,6 +238,209 @@ async function saveFeedback() {
   }
 }
 
+function setConnectionsUnlocked(unlocked) {
+  document.getElementById("adminLoginPanel").hidden = unlocked;
+  document.getElementById("connectionsUnlocked").hidden = !unlocked;
+  if (!unlocked) {
+    state.csrfToken = null;
+  }
+}
+
+async function adminJsonFetch(url, options = {}) {
+  const headers = { Accept: "application/json", ...(options.headers || {}) };
+  if (options.body) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (options.method && options.method !== "GET" && state.csrfToken) {
+    headers["X-CSRF-Token"] = state.csrfToken;
+  }
+  const response = await fetch(url, { ...options, headers });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(errorMessage(payload, "The connection request failed."));
+  }
+  return payload;
+}
+
+function populateSettings(settings) {
+  document.getElementById("modelDisplayName").value = settings.model.display_name;
+  document.getElementById("modelBaseUrl").value = settings.model.base_url;
+  document.getElementById("modelId").value = settings.model.model_id || "";
+  document.getElementById("modelApiKey").value = "";
+  document.getElementById("modelStatus").textContent = settings.model.api_key_configured
+    ? "A write-only model key is configured."
+    : "No model key is configured.";
+  document.getElementById("voiceBaseUrl").value = settings.voice.base_url;
+  document.getElementById("ttsModelId").value = settings.voice.tts_model_id;
+  document.getElementById("outputFormat").value = settings.voice.output_format;
+  document.getElementById("voiceApiKey").value = "";
+  const voiceSelect = document.getElementById("voiceId");
+  voiceSelect.replaceChildren();
+  const option = document.createElement("option");
+  option.value = settings.voice.voice_id || "";
+  option.textContent = settings.voice.voice_name || "Refresh voices to choose";
+  if (!settings.voice.voice_id) {
+    option.dataset.placeholder = "true";
+  }
+  voiceSelect.append(option);
+  document.getElementById("voiceStatus").textContent = settings.voice.api_key_configured
+    ? "A write-only ElevenLabs key is configured."
+    : "No ElevenLabs key is configured.";
+}
+
+async function loadConnectionSettings() {
+  populateSettings(await adminJsonFetch("/api/settings", { method: "GET" }));
+}
+
+async function loadAdminSession() {
+  try {
+    const session = await adminJsonFetch("/api/admin/session", { method: "GET" });
+    state.csrfToken = session.csrf_token;
+    setConnectionsUnlocked(true);
+    await loadConnectionSettings();
+  } catch (_) {
+    setConnectionsUnlocked(false);
+  }
+}
+
+function modelPayload(clearApiKey = false) {
+  return {
+    provider: "openai_compatible",
+    display_name: document.getElementById("modelDisplayName").value.trim(),
+    base_url: document.getElementById("modelBaseUrl").value.trim(),
+    model_id: document.getElementById("modelId").value.trim() || null,
+    api_key: clearApiKey
+      ? null
+      : document.getElementById("modelApiKey").value.trim() || null,
+    clear_api_key: clearApiKey,
+  };
+}
+
+function voicePayload(clearApiKey = false) {
+  const voiceSelect = document.getElementById("voiceId");
+  const placeholder = voiceSelect.selectedOptions[0]?.dataset.placeholder === "true";
+  return {
+    provider: "elevenlabs",
+    base_url: document.getElementById("voiceBaseUrl").value,
+    voice_id: placeholder ? null : voiceSelect.value || null,
+    voice_name: placeholder ? null : voiceSelect.selectedOptions[0]?.textContent || null,
+    tts_model_id: document.getElementById("ttsModelId").value.trim(),
+    output_format: document.getElementById("outputFormat").value,
+    api_key: clearApiKey
+      ? null
+      : document.getElementById("voiceApiKey").value.trim() || null,
+    clear_api_key: clearApiKey,
+  };
+}
+
+async function saveModelSettings(clearApiKey = false) {
+  const result = await adminJsonFetch("/api/settings/model", {
+    method: "PUT",
+    body: JSON.stringify(modelPayload(clearApiKey)),
+  });
+  document.getElementById("modelApiKey").value = "";
+  document.getElementById("modelStatus").textContent = result.api_key_configured
+    ? "Model settings saved; a key is configured."
+    : "Model settings saved; no key is configured.";
+}
+
+async function saveVoiceSettings(clearApiKey = false) {
+  const result = await adminJsonFetch("/api/settings/voice", {
+    method: "PUT",
+    body: JSON.stringify(voicePayload(clearApiKey)),
+  });
+  document.getElementById("voiceApiKey").value = "";
+  document.getElementById("voiceStatus").textContent = result.api_key_configured
+    ? "Voice settings saved; a key is configured."
+    : "Voice settings saved; no key is configured.";
+}
+
+async function modelAction(path) {
+  const result = await adminJsonFetch(path, {
+    method: "POST",
+    body: JSON.stringify({
+      base_url: document.getElementById("modelBaseUrl").value.trim(),
+      api_key: document.getElementById("modelApiKey").value.trim() || null,
+    }),
+  });
+  if (result.models) {
+    const options = document.getElementById("modelOptions");
+    options.replaceChildren();
+    result.models.forEach((model) => {
+      const option = document.createElement("option");
+      option.value = model.id;
+      options.append(option);
+    });
+    return `${result.models.length} models found.`;
+  }
+  return `Connection succeeded; ${result.models_count} models found.`;
+}
+
+async function voiceAction(path) {
+  const result = await adminJsonFetch(path, {
+    method: "POST",
+    body: JSON.stringify({
+      base_url: document.getElementById("voiceBaseUrl").value,
+      api_key: document.getElementById("voiceApiKey").value.trim() || null,
+    }),
+  });
+  if (result.models) {
+    const options = document.getElementById("ttsModelOptions");
+    options.replaceChildren();
+    result.models.forEach((model) => {
+      const option = document.createElement("option");
+      option.value = model.model_id;
+      option.label = model.name || model.model_id;
+      options.append(option);
+    });
+    return `${result.models.length} TTS models found.`;
+  }
+  if (result.voices) {
+    const select = document.getElementById("voiceId");
+    const selected = select.value;
+    select.replaceChildren();
+    result.voices.forEach((voice) => {
+      const option = document.createElement("option");
+      option.value = voice.voice_id;
+      option.textContent = voice.name;
+      option.selected = voice.voice_id === selected;
+      select.append(option);
+    });
+    return `${result.voices.length} voices found.`;
+  }
+  return `Connection succeeded; ${result.voices_count} voices found.`;
+}
+
+async function generateNarration() {
+  if (!state.currentAnalysis) {
+    return;
+  }
+  const button = document.getElementById("audioButton");
+  const statusElement = document.getElementById("audioStatus");
+  button.disabled = true;
+  statusElement.textContent = "Preparing narration…";
+  try {
+    const response = await fetch(`/api/analyses/${state.currentAnalysis.id}/narration`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(errorMessage(payload, "Narration is unavailable."));
+    }
+    if (state.currentAudio) {
+      state.currentAudio.pause();
+    }
+    state.currentAudio = new Audio(payload.audio_url);
+    await state.currentAudio.play();
+    statusElement.textContent = "Narration playing.";
+  } catch (error) {
+    statusElement.textContent = error.message || "Narration is unavailable.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 document.querySelectorAll(".star").forEach((button) => {
   button.addEventListener("click", () => {
     state.rating = Number(button.dataset.rating);
@@ -238,6 +449,158 @@ document.querySelectorAll(".star").forEach((button) => {
 });
 
 document.getElementById("saveFeedback").addEventListener("click", saveFeedback);
+document.getElementById("audioButton").addEventListener("click", generateNarration);
+
+document.getElementById("adminLoginForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const passwordInput = document.getElementById("adminPassword");
+  const statusElement = document.getElementById("adminStatus");
+  statusElement.textContent = "Unlocking…";
+  try {
+    const session = await adminJsonFetch("/api/admin/login", {
+      method: "POST",
+      body: JSON.stringify({ password: passwordInput.value }),
+    });
+    state.csrfToken = session.csrf_token;
+    setConnectionsUnlocked(true);
+    await loadConnectionSettings();
+    statusElement.textContent = "";
+  } catch (error) {
+    statusElement.textContent = error.message || "Connections could not be unlocked.";
+  } finally {
+    passwordInput.value = "";
+  }
+});
+
+document.getElementById("adminLogout").addEventListener("click", async () => {
+  try {
+    await adminJsonFetch("/api/admin/logout", { method: "POST" });
+  } finally {
+    setConnectionsUnlocked(false);
+  }
+});
+
+document.getElementById("modelSettingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await saveModelSettings();
+  } catch (error) {
+    document.getElementById("modelStatus").textContent = error.message;
+  }
+});
+
+document.getElementById("voiceSettingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await saveVoiceSettings();
+  } catch (error) {
+    document.getElementById("voiceStatus").textContent = error.message;
+  }
+});
+
+document.getElementById("clearModelKey").addEventListener("click", async () => {
+  try {
+    await saveModelSettings(true);
+  } catch (error) {
+    document.getElementById("modelStatus").textContent = error.message;
+  }
+});
+
+document.getElementById("clearVoiceKey").addEventListener("click", async () => {
+  try {
+    await saveVoiceSettings(true);
+  } catch (error) {
+    document.getElementById("voiceStatus").textContent = error.message;
+  }
+});
+
+document.getElementById("refreshModels").addEventListener("click", async () => {
+  const statusElement = document.getElementById("modelStatus");
+  try {
+    statusElement.textContent = await modelAction("/api/settings/model/models");
+  } catch (error) {
+    statusElement.textContent = error.message;
+  }
+});
+
+document.getElementById("testModel").addEventListener("click", async () => {
+  const statusElement = document.getElementById("modelStatus");
+  try {
+    statusElement.textContent = await modelAction("/api/settings/model/test");
+  } catch (error) {
+    statusElement.textContent = error.message;
+  }
+});
+
+document.getElementById("refreshVoices").addEventListener("click", async () => {
+  const statusElement = document.getElementById("voiceStatus");
+  try {
+    statusElement.textContent = await voiceAction("/api/settings/voice/voices");
+  } catch (error) {
+    statusElement.textContent = error.message;
+  }
+});
+
+document.getElementById("refreshVoiceModels").addEventListener("click", async () => {
+  const statusElement = document.getElementById("voiceStatus");
+  try {
+    statusElement.textContent = await voiceAction("/api/settings/voice/models");
+  } catch (error) {
+    statusElement.textContent = error.message;
+  }
+});
+
+document.getElementById("testVoice").addEventListener("click", async () => {
+  const statusElement = document.getElementById("voiceStatus");
+  try {
+    statusElement.textContent = await voiceAction("/api/settings/voice/test");
+  } catch (error) {
+    statusElement.textContent = error.message;
+  }
+});
+
+document.getElementById("previewVoice").addEventListener("click", async () => {
+  const statusElement = document.getElementById("voiceStatus");
+  let revokePreviewUrl = null;
+  try {
+    const response = await fetch("/api/settings/voice/preview", {
+      method: "POST",
+      headers: {
+        Accept: "audio/mpeg",
+        "Content-Type": "application/json",
+        "X-CSRF-Token": state.csrfToken,
+      },
+      body: JSON.stringify({
+        text: "Here’s a short preview from What’s in the Glass.",
+        base_url: document.getElementById("voiceBaseUrl").value,
+        api_key: document.getElementById("voiceApiKey").value.trim() || null,
+        voice_id: document.getElementById("voiceId").value || null,
+        tts_model_id: document.getElementById("ttsModelId").value.trim(),
+        output_format: document.getElementById("outputFormat").value,
+      }),
+    });
+    if (!response.ok) {
+      const payload = await response.json();
+      throw new Error(errorMessage(payload, "Voice preview failed."));
+    }
+    const url = URL.createObjectURL(await response.blob());
+    let revoked = false;
+    revokePreviewUrl = () => {
+      if (!revoked) {
+        revoked = true;
+        URL.revokeObjectURL(url);
+      }
+    };
+    const preview = new Audio(url);
+    preview.addEventListener("ended", revokePreviewUrl, { once: true });
+    preview.addEventListener("error", revokePreviewUrl, { once: true });
+    await preview.play();
+    statusElement.textContent = "Voice preview playing.";
+  } catch (error) {
+    revokePreviewUrl?.();
+    statusElement.textContent = error.message;
+  }
+});
 
 document.querySelectorAll("[data-drinker]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -261,6 +624,9 @@ document.querySelectorAll("[data-view]").forEach((button) => {
     showView(button.dataset.view);
     if (button.dataset.view === "historyView") {
       loadHistory();
+    }
+    if (button.dataset.view === "connectionsView") {
+      loadAdminSession();
     }
   });
 });

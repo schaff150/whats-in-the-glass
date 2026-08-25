@@ -5,17 +5,19 @@ description = "LAN-local spirits guide"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "cryptography>=50,<51",
     "fastapi>=0.116,<1",
+    "httpx>=0.28,<1",
     "python-multipart>=0.0.20,<1",
     "uvicorn>=0.35,<1",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28,<1",
     "httpx2>=2,<3",
     "pytest>=9.0.3,<10",
     "pyyaml>=6.0,<7",
+    "ruff>=0.12,<1",
 ]
 
 [tool.pytest.ini_options]

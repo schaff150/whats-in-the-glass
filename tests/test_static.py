@@ -18,7 +18,7 @@ def test_home_shell_is_accessible_and_text_first(tmp_path):
     assert 'capture="environment"' in html
     assert 'id="guestName"' in html
     assert 'aria-live="polite"' in html
-    assert "Hamish narration is the next integration" in html
+    assert "Choose a voice in Connections" in html
     assert 'id="audioButton"' in html and "disabled" in html
 
 
@@ -114,3 +114,90 @@ def test_mobile_navigation_stays_above_scrollable_content(tmp_path):
 
     bottom_rule = styles.split(".bottom{", 1)[1].split("}", 1)[0]
     assert "z-index:" in bottom_rule
+
+
+def test_connections_ui_is_mobile_accessible_write_only_and_csp_safe(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        html = client.get("/").text
+        script = client.get("/static/app.js").text
+        worker = client.get("/service-worker.js").text
+
+    assert 'id="connectionsView"' in html
+    assert 'data-view="connectionsView"' in html
+    assert ">Connections</button>" in html
+    assert 'id="adminPassword"' in html and 'type="password"' in html
+    assert 'id="modelApiKey"' in html and 'id="voiceApiKey"' in html
+    assert "Blank preserves the saved key" in html
+    assert 'id="clearModelKey"' in html and 'id="clearVoiceKey"' in html
+    assert 'id="refreshModels"' in html and 'id="testModel"' in html
+    assert 'id="refreshVoices"' in html and 'id="testVoice"' in html
+    assert 'id="refreshVoiceModels"' in html
+    assert 'list="ttsModelOptions"' in html
+    assert 'id="previewVoice"' in html
+    assert "HTTPS is required before entering real credentials" in html
+    for endpoint in [
+        "/api/admin/login",
+        "/api/admin/logout",
+        "/api/admin/session",
+        "/api/settings/model",
+        "/api/settings/model/models",
+        "/api/settings/model/test",
+        "/api/settings/voice",
+        "/api/settings/voice/voices",
+        "/api/settings/voice/models",
+        "/api/settings/voice/test",
+        "/api/settings/voice/preview",
+        "/narration",
+    ]:
+        assert endpoint in script
+    assert "innerHTML" not in script
+    assert "localStorage" not in script
+    assert "indexedDB" not in script
+    assert 'url.pathname.startsWith("/api/")' in worker
+    assert '"/api/' not in worker.split("SHELL_ASSETS", 1)[1].split("];", 1)[0]
+
+
+def test_connections_client_omits_keys_for_clear_and_never_saves_voice_placeholder(
+    tmp_path,
+):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        html = client.get("/").text
+        script = client.get("/static/app.js").text
+
+    assert 'option.value = settings.voice.voice_id || ""' in script
+    assert 'option.dataset.placeholder = "true"' in script
+    assert "voiceSelect.selectedOptions[0]?.dataset.placeholder" in script
+    assert "api_key: clearApiKey" in script
+    assert script.count("? null") >= 2
+    assert "Refresh voices to choose</option>" not in html
+
+
+def test_client_renders_structured_errors_and_preview_revokes_blob_on_all_outcomes(
+    tmp_path,
+):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        script = client.get("/static/app.js").text
+
+    assert 'typeof payload?.detail?.message === "string"' in script
+    assert 'base_url: document.getElementById("voiceBaseUrl").value' in script
+    assert 'voice_id: document.getElementById("voiceId").value || null' in script
+    assert 'tts_model_id: document.getElementById("ttsModelId").value.trim()' in script
+    assert 'output_format: document.getElementById("outputFormat").value' in script
+    assert (
+        'api_key: document.getElementById("voiceApiKey").value.trim() || null' in script
+    )
+    assert 'preview.addEventListener("error", revokePreviewUrl' in script
+    assert 'preview.addEventListener("ended", revokePreviewUrl' in script
+    assert "URL.revokeObjectURL(url)" in script
+
+
+def test_analysis_ui_wording_is_neutral_for_demo_and_configured_models(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        html = client.get("/").text
+        script = client.get("/static/app.js").text
+
+    assert "none in demo" not in script
+    assert "No grounded sources" in script
+    assert "identification-pending" not in html
+    assert "honest demo briefing" not in html
+    assert "configured multimodal model" in html
