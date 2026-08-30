@@ -15,6 +15,22 @@ def public_resolver(host, port, *, type):
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
 
 
+def substantive_payload(**overrides):
+    payload = {
+        "identified_title": "Verified bottle",
+        "region": "Speyside",
+        "age_statement": "12 years",
+        "abv": "46%",
+        "style": "Single malt",
+        "overview": " ".join(["overview"] * 55),
+        "context": " ".join(["context"] * 75),
+        "tasting_notes": " ".join(["tasting"] * 55),
+        "sources": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def configured_database(tmp_path):
     database = Database(tmp_path / "witg.sqlite3", secret_key=b"k" * 32)
     database.initialize()
@@ -41,17 +57,9 @@ def test_configured_text_analysis_uses_chat_completions_and_never_fabricates_sou
                     {
                         "message": {
                             "content": json.dumps(
-                                {
-                                    "identified_title": "Verified bottle",
-                                    "region": "Speyside",
-                                    "age_statement": "12 years",
-                                    "abv": "46%",
-                                    "style": "Single malt",
-                                    "overview": "A concise overview.",
-                                    "context": "A concise context.",
-                                    "tasting_notes": "Pear and malt.",
-                                    "sources": "Model supplied an unverified source",
-                                }
+                                substantive_payload(
+                                    sources="Model supplied an unverified source"
+                                )
                             )
                         }
                     }
@@ -76,23 +84,74 @@ def test_configured_text_analysis_uses_chat_completions_and_never_fabricates_sou
     assert payload["model"] == "vision-model"
     assert payload["response_format"] == {"type": "json_object"}
     assert "Known bottle" in str(payload["messages"])
+    prompt = str(payload["messages"])
+    assert "not a label transcription or terse catalogue entry" in prompt
+    assert "Overview: 75–120 words" in prompt
+    assert "Context: 110–180 words" in prompt
+    assert "Tasting notes: 75–130 words" in prompt
+    assert "serving suggestion" in prompt
+    assert "Do not invent" in prompt
+
+
+def test_too_brief_configured_analysis_is_retried_once_and_never_persisted(
+    tmp_path,
+):
+    calls = 0
+    brief = {
+        "identified_title": "Glenmorangie The Original",
+        "region": "Highland, Scotland",
+        "age_statement": "12 years",
+        "abv": "Not visible",
+        "style": "Single malt Scotch whisky",
+        "overview": "A 12-year-old Highland single malt.",
+        "context": "It is matured in bourbon casks.",
+        "tasting_notes": "Orange, honey, and peach.",
+        "sources": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps(brief)}}]},
+        )
+
+    app = create_app(
+        data_dir=tmp_path,
+        secret_key=b"k" * 32,
+        provider_transport=httpx.MockTransport(handler),
+        provider_resolver=public_resolver,
+    )
+    app.state.database.update_model_settings(
+        display_name="Configured",
+        base_url="https://models.example/v1",
+        model_id="model-1",
+        api_key="briefing-key-canary",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/analyses",
+            data={"drinker": "Me", "drink_name": "Glenmorangie Original 12"},
+        )
+
+    assert response.status_code == 502
+    assert calls == 2
+    assert app.state.database.list_analyses() == []
 
 
 def test_configured_photo_analysis_sends_a_data_uri_to_compatible_vision_model(
     tmp_path,
 ):
     seen = {}
-    valid = {
-        "identified_title": "Photo bottle",
-        "region": "Unknown",
-        "age_statement": "Unknown",
-        "abv": "Unknown",
-        "style": "Spirit",
-        "overview": "Overview.",
-        "context": "Context.",
-        "tasting_notes": "Notes.",
-        "sources": [],
-    }
+    valid = substantive_payload(
+        identified_title="Photo bottle",
+        region="Unknown",
+        age_statement="Unknown",
+        abv="Unknown",
+        style="Spirit",
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["payload"] = json.loads(request.content)
@@ -132,17 +191,13 @@ def test_app_uses_configured_model_for_analysis_when_no_replacement_is_injected(
                     {
                         "message": {
                             "content": json.dumps(
-                                {
-                                    "identified_title": "Runtime configured result",
-                                    "region": "Highlands",
-                                    "age_statement": "NAS",
-                                    "abv": "40%",
-                                    "style": "Blended whisky",
-                                    "overview": "Overview.",
-                                    "context": "Context.",
-                                    "tasting_notes": "Tasting.",
-                                    "sources": [],
-                                }
+                                substantive_payload(
+                                    identified_title="Runtime configured result",
+                                    region="Highlands",
+                                    age_statement="NAS",
+                                    abv="40%",
+                                    style="Blended whisky",
+                                )
                             )
                         }
                     }

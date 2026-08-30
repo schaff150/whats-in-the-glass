@@ -158,9 +158,24 @@ class Database:
                     fingerprint TEXT NOT NULL,
                     file_name TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    last_used_at TEXT,
                     UNIQUE (analysis_id, fingerprint),
                     FOREIGN KEY (analysis_id) REFERENCES analyses(id) ON DELETE CASCADE
                 )
+                """
+            )
+            narration_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(narrations)")
+            }
+            if "last_used_at" not in narration_columns:
+                connection.execute(
+                    "ALTER TABLE narrations ADD COLUMN last_used_at TEXT"
+                )
+            connection.execute(
+                """
+                UPDATE narrations
+                SET last_used_at = created_at
+                WHERE last_used_at IS NULL
                 """
             )
 
@@ -293,6 +308,13 @@ class Database:
                 "SELECT * FROM narrations WHERE token = ?", (token,)
             ).fetchone()
 
+    def mark_narration_used(self, token: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE narrations SET last_used_at = ? WHERE token = ?",
+                (datetime.now(UTC).isoformat(), token),
+            )
+
     def save_narration(
         self,
         *,
@@ -301,20 +323,30 @@ class Database:
         fingerprint: str,
         file_name: str,
     ) -> sqlite3.Row:
+        used_at = datetime.now(UTC).isoformat()
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO narrations (
-                    token, analysis_id, fingerprint, file_name, created_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    token, analysis_id, fingerprint, file_name, created_at, last_used_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token,
                     analysis_id,
                     fingerprint,
                     file_name,
-                    datetime.now(UTC).isoformat(),
+                    used_at,
+                    used_at,
                 ),
+            )
+            connection.execute(
+                """
+                UPDATE narrations
+                SET last_used_at = ?
+                WHERE analysis_id = ? AND fingerprint = ?
+                """,
+                (used_at, analysis_id, fingerprint),
             )
         return self.get_narration(analysis_id, fingerprint)
 
@@ -369,7 +401,16 @@ class Database:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT analyses.*, feedback.rating, feedback.notes
+                SELECT analyses.*, feedback.rating, feedback.notes,
+                    (
+                        SELECT narrations.token
+                        FROM narrations
+                        WHERE narrations.analysis_id = analyses.id
+                        ORDER BY COALESCE(
+                            narrations.last_used_at, narrations.created_at
+                        ) DESC, narrations.created_at DESC, narrations.token DESC
+                        LIMIT 1
+                    ) AS narration_token
                 FROM analyses
                 LEFT JOIN feedback ON feedback.analysis_id = analyses.id
                 ORDER BY analyses.created_at DESC, analyses.id DESC
@@ -389,6 +430,10 @@ class Database:
     @staticmethod
     def _analysis_from_row(row: sqlite3.Row) -> AnalysisRecord:
         values = dict(row)
+        narration_token = values.pop("narration_token", None)
+        values["narration_url"] = (
+            f"/api/audio/{narration_token}" if narration_token else None
+        )
         values["sources"] = json.loads(values.pop("sources_json"))
         values["created_at"] = datetime.fromisoformat(values["created_at"])
         return AnalysisRecord.model_validate(values)

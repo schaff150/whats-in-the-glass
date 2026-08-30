@@ -4,8 +4,8 @@ const state = {
   drinker: "Me",
   currentAnalysis: null,
   rating: null,
-  csrfToken: null,
   currentAudio: null,
+  currentNarrationUrl: null,
 };
 
 const drinkerDisplayNames = {
@@ -71,7 +71,12 @@ function addTextElement(parent, tagName, className, text) {
 }
 
 function renderAnalysis(analysis) {
+  if (state.currentAudio) {
+    state.currentAudio.pause();
+    state.currentAudio = null;
+  }
   state.currentAnalysis = analysis;
+  state.currentNarrationUrl = analysis.narration_url || null;
   document.getElementById("resultTitle").textContent = analysis.identified_title;
   document.getElementById("resultOverview").textContent = analysis.overview;
   document.getElementById("resultContext").textContent = analysis.context;
@@ -98,7 +103,10 @@ function renderAnalysis(analysis) {
   updateStars();
   const audioButton = document.getElementById("audioButton");
   audioButton.disabled = false;
-  document.getElementById("audioStatus").textContent = "Generate narration on demand using your selected voice.";
+  audioButton.setAttribute("aria-label", `Play narration for ${analysis.identified_title}`);
+  document.getElementById("audioStatus").textContent = state.currentNarrationUrl
+    ? "Saved narration ready to play."
+    : "Play narration. Saved audio is reused when available.";
   showView("resultView");
 }
 
@@ -186,12 +194,15 @@ function renderHistory(history) {
   }
   historyStatus.textContent = `${history.length} recent ${history.length === 1 ? "glass" : "glasses"}.`;
   history.forEach((analysis) => {
-    const card = document.createElement("article");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "history-card";
+    card.setAttribute("aria-label", `Open review for ${analysis.identified_title}`);
     addTextElement(card, "span", "bottle-mark", "");
     const copy = addTextElement(card, "div", "copy", "");
     addTextElement(copy, "h3", "", analysis.identified_title);
     addTextElement(copy, "p", "", historyDescription(analysis));
+    card.addEventListener("click", () => renderAnalysis(analysis));
     historyList.append(card);
   });
   renderLastGlass(history);
@@ -248,21 +259,10 @@ async function saveFeedback() {
   }
 }
 
-function setConnectionsUnlocked(unlocked) {
-  document.getElementById("adminLoginPanel").hidden = unlocked;
-  document.getElementById("connectionsUnlocked").hidden = !unlocked;
-  if (!unlocked) {
-    state.csrfToken = null;
-  }
-}
-
-async function adminJsonFetch(url, options = {}) {
+async function settingsJsonFetch(url, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (options.body) {
     headers["Content-Type"] = "application/json";
-  }
-  if (options.method && options.method !== "GET" && state.csrfToken) {
-    headers["X-CSRF-Token"] = state.csrfToken;
   }
   const response = await fetch(url, { ...options, headers });
   const payload = await response.json();
@@ -299,18 +299,7 @@ function populateSettings(settings) {
 }
 
 async function loadConnectionSettings() {
-  populateSettings(await adminJsonFetch("/api/settings", { method: "GET" }));
-}
-
-async function loadAdminSession() {
-  try {
-    const session = await adminJsonFetch("/api/admin/session", { method: "GET" });
-    state.csrfToken = session.csrf_token;
-    setConnectionsUnlocked(true);
-    await loadConnectionSettings();
-  } catch (_) {
-    setConnectionsUnlocked(false);
-  }
+  populateSettings(await settingsJsonFetch("/api/settings", { method: "GET" }));
 }
 
 function modelPayload(clearApiKey = false) {
@@ -344,7 +333,7 @@ function voicePayload(clearApiKey = false) {
 }
 
 async function saveModelSettings(clearApiKey = false) {
-  const result = await adminJsonFetch("/api/settings/model", {
+  const result = await settingsJsonFetch("/api/settings/model", {
     method: "PUT",
     body: JSON.stringify(modelPayload(clearApiKey)),
   });
@@ -355,7 +344,7 @@ async function saveModelSettings(clearApiKey = false) {
 }
 
 async function saveVoiceSettings(clearApiKey = false) {
-  const result = await adminJsonFetch("/api/settings/voice", {
+  const result = await settingsJsonFetch("/api/settings/voice", {
     method: "PUT",
     body: JSON.stringify(voicePayload(clearApiKey)),
   });
@@ -366,7 +355,7 @@ async function saveVoiceSettings(clearApiKey = false) {
 }
 
 async function modelAction(path) {
-  const result = await adminJsonFetch(path, {
+  const result = await settingsJsonFetch(path, {
     method: "POST",
     body: JSON.stringify({
       base_url: document.getElementById("modelBaseUrl").value.trim(),
@@ -387,7 +376,7 @@ async function modelAction(path) {
 }
 
 async function voiceAction(path) {
-  const result = await adminJsonFetch(path, {
+  const result = await settingsJsonFetch(path, {
     method: "POST",
     body: JSON.stringify({
       base_url: document.getElementById("voiceBaseUrl").value,
@@ -430,18 +419,24 @@ async function generateNarration() {
   button.disabled = true;
   statusElement.textContent = "Preparing narration…";
   try {
-    const response = await fetch(`/api/analyses/${state.currentAnalysis.id}/narration`, {
-      method: "POST",
-      headers: { Accept: "application/json" },
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(errorMessage(payload, "Narration is unavailable."));
+    let audioUrl = state.currentNarrationUrl;
+    if (!audioUrl) {
+      const response = await fetch(`/api/analyses/${state.currentAnalysis.id}/narration`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(errorMessage(payload, "Narration is unavailable."));
+      }
+      audioUrl = payload.audio_url;
+      state.currentNarrationUrl = audioUrl;
+      state.currentAnalysis.narration_url = audioUrl;
     }
     if (state.currentAudio) {
       state.currentAudio.pause();
     }
-    state.currentAudio = new Audio(payload.audio_url);
+    state.currentAudio = new Audio(audioUrl);
     await state.currentAudio.play();
     statusElement.textContent = "Narration playing.";
   } catch (error) {
@@ -460,35 +455,6 @@ document.querySelectorAll(".star").forEach((button) => {
 
 document.getElementById("saveFeedback").addEventListener("click", saveFeedback);
 document.getElementById("audioButton").addEventListener("click", generateNarration);
-
-document.getElementById("adminLoginForm").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const passwordInput = document.getElementById("adminPassword");
-  const statusElement = document.getElementById("adminStatus");
-  statusElement.textContent = "Unlocking…";
-  try {
-    const session = await adminJsonFetch("/api/admin/login", {
-      method: "POST",
-      body: JSON.stringify({ password: passwordInput.value }),
-    });
-    state.csrfToken = session.csrf_token;
-    setConnectionsUnlocked(true);
-    await loadConnectionSettings();
-    statusElement.textContent = "";
-  } catch (error) {
-    statusElement.textContent = error.message || "Connections could not be unlocked.";
-  } finally {
-    passwordInput.value = "";
-  }
-});
-
-document.getElementById("adminLogout").addEventListener("click", async () => {
-  try {
-    await adminJsonFetch("/api/admin/logout", { method: "POST" });
-  } finally {
-    setConnectionsUnlocked(false);
-  }
-});
 
 document.getElementById("modelSettingsForm").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -578,7 +544,6 @@ document.getElementById("previewVoice").addEventListener("click", async () => {
       headers: {
         Accept: "audio/mpeg",
         "Content-Type": "application/json",
-        "X-CSRF-Token": state.csrfToken,
       },
       body: JSON.stringify({
         text: "Here’s a short preview from What’s in the Glass.",
@@ -636,7 +601,7 @@ document.querySelectorAll("[data-view]").forEach((button) => {
       loadHistory();
     }
     if (button.dataset.view === "connectionsView") {
-      loadAdminSession();
+      loadConnectionSettings();
     }
   });
 });

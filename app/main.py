@@ -1,5 +1,4 @@
 import os
-import secrets
 import socket
 from pathlib import Path
 
@@ -9,7 +8,6 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.api import MAX_REQUEST_BYTES, create_api_router
@@ -30,13 +28,7 @@ from app.providers import (
     ProviderError,
     ProviderRateLimitError,
 )
-from app.security import (
-    COOKIE_NAME,
-    AdminAuth,
-    AdminConfigurationError,
-    request_is_https,
-    validate_exact_origin,
-)
+from app.security import validate_exact_origin
 from app.services.analysis import (
     AnalysisService,
     ConfiguredAnalysisService,
@@ -45,10 +37,6 @@ from app.services.analysis import (
 from app.services.narration import NarrationConfigurationError, NarrationService
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-
-class AdminLoginRequest(BaseModel):
-    password: str = Field(min_length=1, max_length=1024)
 
 
 def _read_setting_file(name: str, *, binary: bool) -> str | bytes | None:
@@ -79,7 +67,6 @@ def create_app(
     data_dir: str | Path | None = None,
     analysis_service: AnalysisService | None = None,
     secret_key: str | bytes | None = None,
-    admin_password_record: str | None = None,
     allow_insecure_credentials: bool = True,
     provider_transport: httpx.BaseTransport | None = None,
     provider_resolver=socket.getaddrinfo,
@@ -95,13 +82,8 @@ def create_app(
     resolved_data_dir = Path(data_dir or os.environ.get("WITG_DATA_DIR", "data"))
     if secret_key is None:
         secret_key = _read_setting_file("WITG_SECRET_KEY_FILE", binary=True)
-    if admin_password_record is None:
-        admin_password_record = _read_setting_file(
-            "WITG_ADMIN_PASSWORD_FILE", binary=False
-        )
     database = Database(resolved_data_dir / "witg.sqlite3", secret_key=secret_key)
     database.initialize()
-    admin_auth = AdminAuth(admin_password_record, secret_key)
     if model_host_allowlist is None:
         model_host_allowlist = {
             host.strip()
@@ -156,7 +138,6 @@ def create_app(
     )
     narration_service = NarrationService(database, providers, resolved_data_dir)
     app.state.narration_service = narration_service
-    app.state.admin_auth = admin_auth
     app.include_router(
         create_api_router(database, app.state.analysis_service, analysis_limiter)
     )
@@ -195,30 +176,8 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
-    def require_admin(request: Request):
-        if not admin_auth.configured:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Admin access is not configured.",
-            )
-        validated = admin_auth.validate(request.cookies.get(COOKIE_NAME))
-        if not validated:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Admin authentication required.",
-            )
-        return validated[1]
-
-    def require_admin_mutation(request: Request):
-        session = require_admin(request)
+    def require_same_origin_mutation(request: Request):
         validate_exact_origin(request)
-        supplied = request.headers.get("x-csrf-token", "")
-        if not supplied or not secrets.compare_digest(supplied, session.csrf_token):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="CSRF validation failed.",
-            )
-        return session
 
     def probe_api_key(
         probe: ProviderProbeRequest,
@@ -249,50 +208,13 @@ def create_app(
             )
         return target_url, getter()
 
-    @app.post("/api/admin/login")
-    def admin_login(
-        login: AdminLoginRequest, request: Request, response: Response
-    ) -> dict[str, str | bool]:
-        validate_exact_origin(request)
-        client_id = request.client.host if request.client else "unknown"
-        try:
-            token, session = admin_auth.login(login.password, client_id)
-        except AdminConfigurationError as error:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(error),
-            ) from error
-        response.set_cookie(
-            COOKIE_NAME,
-            token,
-            max_age=30 * 60,
-            httponly=True,
-            secure=request_is_https(request),
-            samesite="strict",
-            path="/api",
-        )
-        return {"authenticated": True, "csrf_token": session.csrf_token}
-
-    @app.get("/api/admin/session")
-    def admin_session(request: Request) -> dict[str, str | bool]:
-        session = require_admin(request)
-        return {"authenticated": True, "csrf_token": session.csrf_token}
-
-    @app.post("/api/admin/logout")
-    def admin_logout(request: Request, response: Response) -> dict[str, bool]:
-        require_admin_mutation(request)
-        admin_auth.logout(request.cookies.get(COOKIE_NAME))
-        response.delete_cookie(COOKIE_NAME, path="/api", samesite="strict")
-        return {"authenticated": False}
-
     @app.get("/api/settings")
     def settings(request: Request):
-        require_admin(request)
         return database.get_settings()
 
     @app.put("/api/settings/model")
     def save_model_settings(update: ModelSettingsUpdate, request: Request):
-        require_admin_mutation(request)
+        require_same_origin_mutation(request)
         if update.base_url.startswith("http://"):
             try:
                 providers.validate_model_endpoint(update.base_url)
@@ -318,7 +240,7 @@ def create_app(
 
     @app.put("/api/settings/voice")
     def save_voice_settings(update: VoiceSettingsUpdate, request: Request):
-        require_admin_mutation(request)
+        require_same_origin_mutation(request)
         try:
             settings = database.update_voice_settings(
                 base_url=update.base_url,
@@ -338,7 +260,7 @@ def create_app(
 
     @app.post("/api/settings/model/models")
     def discover_models(probe: ProviderProbeRequest, request: Request):
-        require_admin_mutation(request)
+        require_same_origin_mutation(request)
         settings = database.get_settings().model
         try:
             target_url, api_key = probe_api_key(
@@ -387,12 +309,12 @@ def create_app(
 
     @app.post("/api/settings/voice/voices")
     def discover_voices(probe: ProviderProbeRequest, request: Request):
-        require_admin_mutation(request)
+        require_same_origin_mutation(request)
         return {"voices": _discover_voices(probe)}
 
     @app.post("/api/settings/voice/models")
     def discover_voice_models(probe: ProviderProbeRequest, request: Request):
-        require_admin_mutation(request)
+        require_same_origin_mutation(request)
         settings = database.get_settings().voice
         try:
             target_url, api_key = probe_api_key(
@@ -418,13 +340,13 @@ def create_app(
 
     @app.post("/api/settings/voice/test")
     def test_voice_connection(probe: ProviderProbeRequest, request: Request):
-        require_admin_mutation(request)
+        require_same_origin_mutation(request)
         voices = _discover_voices(probe)
         return {"ok": True, "voices_count": len(voices)}
 
     @app.post("/api/settings/voice/preview")
     def preview_voice(preview: VoicePreviewRequest, request: Request):
-        require_admin_mutation(request)
+        require_same_origin_mutation(request)
         settings = database.get_settings().voice
         voice_id = preview.voice_id or settings.voice_id
         if not voice_id:
@@ -518,12 +440,18 @@ def create_app(
     @app.get("/service-worker.js", include_in_schema=False)
     def service_worker() -> FileResponse:
         return FileResponse(
-            STATIC_DIR / "service-worker.js", media_type="text/javascript"
+            STATIC_DIR / "service-worker.js",
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-cache"},
         )
 
     @app.get("/", include_in_schema=False)
     def root() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+        return FileResponse(
+            STATIC_DIR / "index.html",
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     return app
 

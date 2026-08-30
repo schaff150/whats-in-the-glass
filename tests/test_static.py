@@ -9,8 +9,9 @@ def test_home_shell_is_accessible_and_text_first(tmp_path):
 
     assert response.status_code == 200
     html = response.text
-    assert '<link rel="stylesheet" href="/static/styles.css">' in html
-    assert '<script src="/static/app.js" defer></script>' in html
+    assert '<link rel="stylesheet" href="/static/styles.css?v=7">' in html
+    assert '<script src="/static/app.js?v=7" defer></script>' in html
+    assert response.headers["cache-control"] == "no-cache"
     assert 'aria-label="Choose drinker"' in html
     assert 'data-drinker="Me" aria-pressed="true">me</button>' in html
     assert 'data-drinker="Wife" aria-pressed="false">Gin</button>' in html
@@ -65,6 +66,24 @@ def test_client_fetches_feedback_and_recent_history(tmp_path):
     assert "innerHTML" not in script
 
 
+def test_recent_glasses_reopen_the_saved_review_and_cached_narration(tmp_path):
+    with TestClient(create_app(data_dir=tmp_path)) as client:
+        script = client.get("/static/app.js").text
+        styles = client.get("/static/styles.css").text
+
+    assert 'const card = document.createElement("button")' in script
+    assert 'card.type = "button"' in script
+    assert (
+        'card.setAttribute("aria-label", `Open review for ${analysis.identified_title}`)'
+        in script
+    )
+    assert 'card.addEventListener("click", () => renderAnalysis(analysis))' in script
+    assert "Play narration. Saved audio is reused when available." in script
+    history_rule = styles.split(".history-card{", 1)[1].split("}", 1)[0]
+    assert "text-align:left" in history_rule
+    assert "width:100%" in history_rule
+
+
 def test_manifest_icons_and_service_worker_are_served(tmp_path):
     with TestClient(create_app(data_dir=tmp_path)) as client:
         manifest_response = client.get("/static/manifest.webmanifest")
@@ -100,8 +119,9 @@ def test_manifest_icons_and_service_worker_are_served(tmp_path):
 
     assert worker_response.status_code == 200
     worker = worker_response.text
-    assert '"/static/app.js"' in worker
-    assert '"/static/styles.css"' in worker
+    assert 'const CACHE_NAME = "witg-shell-v7"' in worker
+    assert '"/static/app.js?v=7"' in worker
+    assert '"/static/styles.css?v=7"' in worker
     assert 'url.pathname.startsWith("/api/")' in worker
     assert "fetch(event.request)" in worker
     assert "cache.put" in worker
@@ -120,6 +140,7 @@ def test_service_worker_is_registered_at_the_app_scope(tmp_path):
 
     assert worker_response.status_code == 200
     assert worker_response.headers["content-type"].startswith("text/javascript")
+    assert worker_response.headers["cache-control"] == "no-cache"
     assert 'navigator.serviceWorker.register("/service-worker.js")' in script
 
 
@@ -140,7 +161,7 @@ def test_connections_ui_is_mobile_accessible_write_only_and_csp_safe(tmp_path):
     assert 'id="connectionsView"' in html
     assert 'data-view="connectionsView"' in html
     assert ">Connections</button>" in html
-    assert 'id="adminPassword"' in html and 'type="password"' in html
+    assert 'id="adminPassword"' not in html
     assert 'id="modelApiKey"' in html and 'id="voiceApiKey"' in html
     assert "Blank preserves the saved key" in html
     assert 'id="clearModelKey"' in html and 'id="clearVoiceKey"' in html
@@ -151,9 +172,6 @@ def test_connections_ui_is_mobile_accessible_write_only_and_csp_safe(tmp_path):
     assert 'id="previewVoice"' in html
     assert "Trusted LAN mode" in html
     for endpoint in [
-        "/api/admin/login",
-        "/api/admin/logout",
-        "/api/admin/session",
         "/api/settings/model",
         "/api/settings/model/models",
         "/api/settings/model/test",
@@ -166,6 +184,8 @@ def test_connections_ui_is_mobile_accessible_write_only_and_csp_safe(tmp_path):
     ]:
         assert endpoint in script
     assert "innerHTML" not in script
+    assert "/api/admin/" not in script
+    assert "csrfToken" not in script
     assert "localStorage" not in script
     assert "indexedDB" not in script
     assert 'url.pathname.startsWith("/api/")' in worker

@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#4b2e22">
   <meta name="description" content="A private, LAN-local spirits guide.">
   <title>What’s in the Glass?</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=7">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/icons/favicon.ico">
   <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=7" defer></script>
 </head>
 <body>
   <div class="phone">
@@ -130,18 +130,7 @@
           Provider credentials are accepted here and stored write-only with encryption at rest.
         </aside>
 
-        <section id="adminLoginPanel" class="connection-card" aria-labelledby="adminLoginTitle">
-          <h2 id="adminLoginTitle">Unlock Connections</h2>
-          <form id="adminLoginForm">
-            <label for="adminPassword">Admin passphrase</label>
-            <input id="adminPassword" type="password" autocomplete="current-password" maxlength="1024" required>
-            <button class="primary" type="submit">Unlock</button>
-          </form>
-          <p id="adminStatus" class="status" role="status" aria-live="polite"></p>
-        </section>
-
-        <div id="connectionsUnlocked" hidden>
-          <div class="connection-actions"><span>Admin session unlocked</span><button id="adminLogout" type="button">Lock</button></div>
+        <div id="connectionsUnlocked">
 
           <form id="modelSettingsForm" class="connection-card">
             <span class="eyebrow">Model provider</span><h2>OpenAI-compatible</h2>

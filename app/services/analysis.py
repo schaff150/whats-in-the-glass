@@ -3,7 +3,7 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.db import Database, SecretConfigurationError
 from app.providers import ProviderClient, ProviderError
@@ -121,6 +121,22 @@ class _AnalysisPayload(BaseModel):
     tasting_notes: str = Field(min_length=1, max_length=5000)
     sources: object = None
 
+    @model_validator(mode="after")
+    def briefing_is_substantive(self):
+        section_words = {
+            "overview": len(self.overview.split()),
+            "context": len(self.context.split()),
+            "tasting_notes": len(self.tasting_notes.split()),
+        }
+        if (
+            section_words["overview"] < 45
+            or section_words["context"] < 65
+            or section_words["tasting_notes"] < 45
+            or sum(section_words.values()) < 180
+        ):
+            raise ValueError("The analysis briefing is too brief.")
+        return self
+
 
 class ConfiguredAnalysisService:
     def __init__(
@@ -145,9 +161,21 @@ class ConfiguredAnalysisService:
             raise ProviderError("The model credentials are unavailable.") from error
         user_content: str | list[dict[str, object]]
         prompt = (
-            "Analyze this bottle and return only a JSON object with identified_title, "
-            "region, age_statement, abv, style, overview, context, tasting_notes, and "
-            "sources. Do not claim grounded research. Bottle name: "
+            "Identify and explain this drink for a curious person deciding what is in "
+            "their glass. Return only one JSON object with identified_title, region, "
+            "age_statement, abv, style, overview, context, tasting_notes, and sources. "
+            "Write a substantive specialist briefing, not a label transcription or "
+            "terse catalogue entry. Overview: 75–120 words covering what it is, who "
+            "made or bottled it, and the most useful defining facts. Context: 110–180 "
+            "words explaining the producer, origin, production or maturation, history, "
+            "and why this expression is interesting; adapt those topics sensibly for "
+            "whisky, gin, wine, beer, or another drink. Tasting notes: 75–130 words "
+            "covering aroma, palate, finish, likely texture, and a practical serving "
+            "suggestion. Distinguish facts visible in the supplied name or label from "
+            "general knowledge and cautious expectations. State uncertainty plainly. "
+            "Do not invent sources, awards, prices, production details, or a claim that "
+            "you browsed the web. Set sources to an empty array because this request has "
+            "no grounded search tool. Bottle name: "
             f"{drink_name or 'not supplied'}"
         )
         if photo is None:
@@ -163,21 +191,46 @@ class ConfiguredAnalysisService:
                     },
                 },
             ]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a knowledgeable, careful drinks guide. Return valid JSON "
+                    "matching the requested schema and completeness requirements."
+                ),
+            },
+            {"role": "user", "content": user_content},
+        ]
         raw = self._providers.chat_completion(
             base_url=settings.base_url,
             api_key=api_key,
             model_id=settings.model_id,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Return valid JSON matching the requested schema.",
-                },
-                {"role": "user", "content": user_content},
-            ],
+            messages=messages,
         )
         try:
             payload = _AnalysisPayload.model_validate(json.loads(raw))
-        except (json.JSONDecodeError, ValidationError) as error:
-            raise ProviderError("The model returned an invalid analysis.") from error
+        except (json.JSONDecodeError, ValidationError):
+            repaired = self._providers.chat_completion(
+                base_url=settings.base_url,
+                api_key=api_key,
+                model_id=settings.model_id,
+                messages=[
+                    *messages,
+                    {
+                        "role": "user",
+                        "content": (
+                            "The previous draft was invalid or too brief. Produce a "
+                            "fresh replacement that satisfies every requested field and "
+                            "word range. Return only the complete JSON object."
+                        ),
+                    },
+                ],
+            )
+            try:
+                payload = _AnalysisPayload.model_validate(json.loads(repaired))
+            except (json.JSONDecodeError, ValidationError) as error:
+                raise ProviderError(
+                    "The model returned an invalid analysis."
+                ) from error
         values = payload.model_dump(exclude={"sources"})
         return AnalysisContent(**values, sources=[])

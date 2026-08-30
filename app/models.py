@@ -36,6 +36,7 @@ class AnalysisRecord(AnalysisCreate):
     created_at: datetime
     rating: int | None = None
     notes: str | None = None
+    narration_url: str | None = None
 
 
 class ModelSettingsView(BaseModel):

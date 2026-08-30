@@ -1,10 +1,10 @@
 "use strict";
 
-const CACHE_NAME = "witg-shell-v4";
+const CACHE_NAME = "witg-shell-v7";
 const SHELL_ASSETS = [
   "/",
-  "/static/styles.css",
-  "/static/app.js",
+  "/static/styles.css?v=7",
+  "/static/app.js?v=7",
   "/static/manifest.webmanifest",
   "/static/icons/icon-192.png",
   "/static/icons/icon-512.png",

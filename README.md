@@ -1,6 +1,6 @@
 # What’s in the Glass?
 
-A LAN-local spirits guide with the mobile **Leather Ledger** interface. It can run as an honest deterministic demo, or use an administrator-configured OpenAI-compatible chat-completions model and ElevenLabs voice from the in-app **Connections** view.
+A LAN-local spirits guide with the mobile **Leather Ledger** interface. It can run as an honest deterministic demo, or use an household-configured OpenAI-compatible chat-completions model and ElevenLabs voice from the in-app **Connections** view.
 
 ## Current milestone
 
@@ -9,14 +9,14 @@ A LAN-local spirits guide with the mobile **Leather Ledger** interface. It can r
 - OpenAI-compatible `GET /models` discovery, manual model IDs, connection testing, and strict JSON chat-completions analysis.
 - ElevenLabs voice discovery, connection testing, preview, and on-demand cached narration for saved analyses.
 - Write-only provider keys encrypted with AES-256-GCM under an externally mounted 32-byte master key.
-- A signed, expiring administrator session protecting every Connections/settings route.
+- Connections are immediately available on the trusted LAN; write operations retain exact Origin/Host validation.
 - Demo fallback when no real model is configured. Generic OpenAI-compatible APIs do not standardize grounded search, so configured-model analyses intentionally return `sources: []` rather than fabricating citations.
 
 ChatGPT subscription/account login is **not** supported. ChatGPT OAuth needs a separate account adapter and is deferred.
 
 ## Security boundary
 
-This is a **trusted-LAN deployment**. Connections accepts administrator-entered provider credentials over the app’s HTTP URL. Do not expose the container to an untrusted network or the public internet.
+This is a **trusted-LAN deployment**. Connections accepts provider credentials over the app’s HTTP URL. Do not expose the container to an untrusted network or the public internet.
 
 For Tailscale Serve, trust only the exact host-side proxy source. On DadServer’s verified default Docker bridge, Tailscale Serve forwarding from the host enters the container from `172.17.0.1`. Set both Uvicorn’s `FORWARDED_ALLOW_IPS` and the app’s `WITG_TRUSTED_PROXY_IPS` to that exact IP (or an explicitly reviewed CIDR), never `*`. The Compose default is operator-overridable:
 
@@ -28,17 +28,15 @@ Only that trusted source may supply `X-Forwarded-Proto: https` and `X-Forwarded-
 
 Connections access requires two read-only files mounted outside the SQLite data volume:
 
-- `WITG_SECRET_KEY_FILE`: exactly 32 raw random bytes (or a URL-safe base64 encoding of 32 bytes). This key encrypts provider secrets with AES-256-GCM and signs admin sessions. The application never auto-generates or replaces it.
-- `WITG_ADMIN_PASSWORD_FILE`: one versioned salted scrypt record, never a plaintext password.
+- `WITG_SECRET_KEY_FILE`: exactly 32 raw random bytes (or a URL-safe base64 encoding of 32 bytes). This key encrypts provider secrets with AES-256-GCM. The application never auto-generates or replaces it.
 
-Startup and `/api/health` remain healthy when either file is absent, and the ordinary demo remains usable. Admin/settings or secret operations return sanitized `503` errors until configured. Back up the master key separately: losing it makes stored provider keys undecryptable.
+Startup and `/api/health` remain healthy when the master-key file is absent, and the ordinary demo remains usable. Secret operations return sanitized `503` errors until it is configured. Back up the master key separately: losing it makes stored provider keys undecryptable.
 
 Generate files **outside the repository and outside `WITG_DATA_DIR`**:
 
 ```bash
 mkdir -p /secure/path/witg
 uv run python -c "import secrets,sys; sys.stdout.buffer.write(secrets.token_bytes(32))" > /secure/path/witg/master-key
-uv run python -c "from app.security import hash_admin_password; import getpass; print(hash_admin_password(getpass.getpass('Admin passphrase: ')))" > /secure/path/witg/admin-password.scrypt
 ```
 
 Restrict both files to the service account. The scrypt format is `scrypt$v=1$n=...$r=...$p=...$salt=...$hash=...`; parsing enforces bounded parameters before hashing.
@@ -79,7 +77,7 @@ uv sync
 uv run pytest -q
 ```
 
-Run without provider/admin files for healthy demo mode:
+Run without provider credentials for healthy demo mode:
 
 ```bash
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8787
@@ -90,7 +88,6 @@ Run with mounted/local files (Git Bash syntax):
 ```bash
 WITG_DATA_DIR=C:/path/to/witg-data \
 WITG_SECRET_KEY_FILE=C:/secure/witg/master-key \
-WITG_ADMIN_PASSWORD_FILE=C:/secure/witg/admin-password.scrypt \
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8787
 ```
 
@@ -98,7 +95,7 @@ Open <http://localhost:8787/> for demo development and check <http://localhost:8
 
 ## Connections workflow
 
-1. Open **Connections** and unlock with the admin passphrase. The passphrase input is cleared immediately and is never placed in browser storage.
+1. Open **Connections** on the trusted LAN.
 2. Configure an OpenAI-compatible HTTPS base URL. Refresh models or type a model ID manually, optionally test, then save.
 3. Configure an official ElevenLabs origin and write-only key. Refresh voices and official TTS models, select each, preview/test with the complete unsaved selection, then save.
 4. Submit bottle text or a photo. A complete model configuration uses `POST {base_url}/chat/completions`; otherwise the deterministic demo handles it.
@@ -117,23 +114,7 @@ Ordinary routes remain open inside the LAN trust boundary:
 - `GET /api/audio/{opaque-token}`
 - `GET /api/history?limit=50&offset=0`
 
-Admin session routes:
-
-- `POST /api/admin/login`
-- `POST /api/admin/logout`
-- `GET /api/admin/session`
-
-All settings, discovery, test, and preview routes require the signed HttpOnly SameSite=Strict admin cookie. Mutations also require the in-memory CSRF token and exact Origin/Host validation:
-
-- `GET /api/settings`
-- `PUT /api/settings/model`
-- `POST /api/settings/model/models`
-- `POST /api/settings/model/test`
-- `PUT /api/settings/voice`
-- `POST /api/settings/voice/voices`
-- `POST /api/settings/voice/models`
-- `POST /api/settings/voice/test`
-- `POST /api/settings/voice/preview`
+Settings reads are available on the trusted LAN. Mutations require exact Origin/Host validation:
 
 Admin/settings responses are `Cache-Control: no-store`. Security headers include CSP without inline script permission, `frame-ancestors 'none'`, nosniff, and no-referrer.
 
@@ -145,11 +126,10 @@ The base Compose file is credential-free and starts healthy demo mode without an
 docker compose up --build
 ```
 
-For provider/admin setup, use the secrets override and required external paths. The `${VAR:?message}` declarations fail before startup when a path is missing; there is no source-tree default:
+For provider setup, use the secrets override and required external paths. The `${VAR:?message}` declarations fail before startup when a path is missing; there is no source-tree default:
 
 ```bash
 export WITG_SECRET_KEY_PATH=/secure/path/witg/master-key
-export WITG_ADMIN_PASSWORD_PATH=/secure/path/witg/admin-password.scrypt
 docker compose -f compose.yaml -f compose.secrets.yaml up --build
 ```
 
@@ -165,7 +145,7 @@ docker compose down --volumes
 
 ## PWA behavior
 
-The root-scoped service worker caches only the static shell, network-first. It bypasses every `/api/*` request, including settings and audio, so secrets, admin responses, analyses, and narration are never placed in the shell cache. JavaScript renders provider/API values with `textContent` and DOM construction; it does not use `innerHTML`, localStorage, or IndexedDB.
+The root-scoped service worker caches only the static shell, network-first. It bypasses every `/api/*` request, including settings and audio, so secrets, settings responses, analyses, and narration are never placed in the shell cache. JavaScript renders provider/API values with `textContent` and DOM construction; it does not use `innerHTML`, localStorage, or IndexedDB.
 
 ## Operator checks
 

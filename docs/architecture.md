@@ -8,12 +8,12 @@ What’s in the Glass? is one Python 3.11/FastAPI process serving a JSON/multipa
 Browser / installed PWA
   ├─ Leather Ledger HTML/CSS/JS
   ├─ open analysis/history/narration API
-  └─ admin-authenticated Connections API
+  └─ trusted-LAN Connections API
                     │
                     ▼
                  FastAPI
   ┌─────────────────┼───────────────────┐
-  │ AdminAuth       │ Database          │
+  │ Origin checks    │ Database          │
   │ AnalysisService │ ProviderClient    │
   │ NarrationService│ security middleware│
   └─────────┬───────┴─────────┬─────────┘
@@ -25,20 +25,12 @@ Browser / installed PWA
 
 `create_app` still accepts a replacement `AnalysisService`; existing embedding/tests can replace the runtime service. Without a replacement, `ConfiguredAnalysisService` selects the saved model dynamically and delegates to `DemoAnalysisService` until a model ID is complete. `PhotoInput` carries validated filename, MIME type, and bytes to either service.
 
-## Connection and admin boundary
+## Connection boundary
 
-Every settings, discovery, connection-test, and voice-preview route requires an admin session. Admin setup is file-backed:
+Connections is open to the trusted LAN, without a separate passphrase. Provider credentials are stored write-only and encrypted at rest using the separately mounted `WITG_SECRET_KEY_FILE` AES-256-GCM key. Mutating Connections routes require exact Origin/Host validation; settings responses are `Cache-Control: no-store`. The deployment must not be exposed to an untrusted network or the public internet.
 
-- `WITG_SECRET_KEY_FILE` points to a read-only 32-byte master key outside the data volume.
-- `WITG_ADMIN_PASSWORD_FILE` points to a versioned, salted, bounded-scrypt hash record.
-
-The plaintext passphrase is never stored. Login verification uses `hashlib.scrypt` and constant-time digest comparison. Failed attempts are bounded in memory. Successful login creates an in-memory session plus an HMAC-signed expiring cookie. The cookie is HttpOnly and SameSite=Strict, and Secure only when the ASGI scheme is HTTPS. The browser retains only the current CSRF token in JavaScript memory; it stores neither passwords nor tokens in localStorage/IndexedDB.
-
-Admin mutations require the signed cookie, exact Origin/Host, and CSRF header. Login validates Origin. Admin/settings responses are `Cache-Control: no-store`. This deployment accepts administrator-entered credentials over its trusted LAN HTTP URL.
-
-Trusted proxy handling is explicit at both layers. Uvicorn reads `FORWARDED_ALLOW_IPS`; the app installs `ProxyHeadersMiddleware` with `WITG_TRUSTED_PROXY_IPS`. DadServer’s verified Docker host source is exactly `172.17.0.1`, never `*`. Only that trusted proxy can promote the ASGI scheme from forwarded HTTPS or replace `request.client` with a safely forwarded Tailscale address. Direct LAN clients keep their actual address, so spoofed forwarded headers cannot unlock credential writes. Login throttling keys by that trusted client identity; when the trusted proxy omits a client address, requests share the documented `unknown` proxy bucket.
-
-Startup remains healthy/demo-capable with missing credential files. Admin and secret operations fail with sanitized `503` responses.
+Startup remains healthy/demo-capable without the master-key file. Secret operations fail with sanitized `503` responses until it is configured.
+Forwarded HTTPS headers are accepted only from the configured trusted proxy IPs (the Docker-host default is `172.17.0.1`).
 
 ## Secret persistence
 
@@ -94,7 +86,7 @@ Local default is `data/`; Compose uses `WITG_DATA_DIR=/data` and a named volume.
 
 The semantic mobile UI uses static CSP-safe JavaScript. Dynamic values are assigned with `textContent`, form values, or `document.createElement`; `innerHTML` is not used. The Connections password/key inputs are write-only and cleared after use. No secret/session material is put in HTML, JavaScript storage, or URLs.
 
-The root service worker is network-first for shell files and bypasses all `/api/` paths, including admin, settings, analysis, and audio. API/media responses are never copied into static caches.
+The root service worker is network-first for shell files and bypasses all `/api/` paths, including settings, analysis, and audio. API/media responses are never copied into static caches.
 
 Security middleware adds CSP (`frame-ancestors 'none'`, no inline script permission), `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
 

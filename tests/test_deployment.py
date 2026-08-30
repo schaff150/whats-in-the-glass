@@ -44,13 +44,10 @@ def test_secrets_compose_override_requires_external_paths_and_repo_ignores_secre
     assert (
         service["environment"]["WITG_SECRET_KEY_FILE"] == "/run/secrets/witg_master_key"
     )
-    assert (
-        service["environment"]["WITG_ADMIN_PASSWORD_FILE"]
-        == "/run/secrets/witg_admin_password"
-    )
-    assert service["secrets"] == ["witg_master_key", "witg_admin_password"]
+    assert "WITG_ADMIN_PASSWORD_FILE" not in service["environment"]
+    assert service["secrets"] == ["witg_master_key"]
     assert "${WITG_SECRET_KEY_PATH:?" in override_text
-    assert "${WITG_ADMIN_PASSWORD_PATH:?" in override_text
+    assert "WITG_ADMIN_PASSWORD_PATH" not in override_text
     assert "./secrets" not in override_text
     assert "secrets/" in gitignore.splitlines()
 

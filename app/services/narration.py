@@ -82,6 +82,7 @@ class NarrationService:
     ) -> str:
         cached = self._database.get_narration(analysis_id, fingerprint)
         if cached is not None and self._safe_path(cached["file_name"]).is_file():
+            self._database.mark_narration_used(cached["token"])
             return cached["token"]
         audio = self._providers.synthesize_speech(
             base_url=settings.base_url,
