@@ -100,7 +100,7 @@ def create_api_router(
                 content=photo_bytes,
             )
         try:
-            content = analysis_service.analyze(drink_name, photo=photo_input)
+            content = analysis_service.analyze(drinker, drink_name, photo=photo_input)
         except (ProviderCapacityError, ProviderRateLimitError) as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

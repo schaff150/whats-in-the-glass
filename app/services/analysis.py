@@ -31,7 +31,7 @@ class PhotoInput:
 
 class AnalysisService(Protocol):
     def analyze(
-        self, drink_name: str | None, photo: PhotoInput | None
+        self, drinker: str, drink_name: str | None, photo: PhotoInput | None
     ) -> AnalysisContent: ...
 
 
@@ -39,8 +39,9 @@ class DemoAnalysisService:
     """Deterministic placeholder; it performs no AI or web research."""
 
     def analyze(
-        self, drink_name: str | None, photo: PhotoInput | None
+        self, drinker: str, drink_name: str | None, photo: PhotoInput | None
     ) -> AnalysisContent:
+        del drinker  # The demo briefing does not adopt the Hamish persona.
         if photo is not None and not drink_name:
             return AnalysisContent(
                 identified_title="Bottle photograph — identification pending",
@@ -150,19 +151,27 @@ class ConfiguredAnalysisService:
         self._fallback = fallback or DemoAnalysisService()
 
     def analyze(
-        self, drink_name: str | None, photo: PhotoInput | None
+        self, drinker: str, drink_name: str | None, photo: PhotoInput | None
     ) -> AnalysisContent:
         settings = self._database.get_settings().model
         if not settings.model_id:
-            return self._fallback.analyze(drink_name, photo)
+            return self._fallback.analyze(drinker, drink_name, photo)
         try:
             api_key = self._database.get_model_api_key()
         except SecretConfigurationError as error:
             raise ProviderError("The model credentials are unavailable.") from error
         user_content: str | list[dict[str, object]]
         prompt = (
-            "Identify and explain this drink for a curious person deciding what is in "
-            "their glass. Return only one JSON object with identified_title, region, "
+            "You are Hamish, a cantankerous but deeply knowledgeable drinks guide. "
+            "Write the briefing in his voice: warm and enthusiastic when the drink "
+            "earns it, dry and opinionated when it does not, never sycophantic. "
+            "Include at most one short cantankerous remark — a good-natured dig at "
+            "the drink, or when the drinker is 'Me', a pointed jab at them if this "
+            "looks like a step back in quality from what they usually pour. Keep the "
+            "remark to a single sentence and never let it crowd out the briefing. "
+            "Identify and explain this drink for a curious person deciding what is "
+            "in their glass. Return only one JSON object with identified_title, "
+            "region, "
             "age_statement, abv, style, overview, context, tasting_notes, and sources. "
             "Write a substantive specialist briefing, not a label transcription or "
             "terse catalogue entry. Overview: 75–120 words covering what it is, who "
@@ -175,8 +184,9 @@ class ConfiguredAnalysisService:
             "general knowledge and cautious expectations. State uncertainty plainly. "
             "Do not invent sources, awards, prices, production details, or a claim that "
             "you browsed the web. Set sources to an empty array because this request has "
-            "no grounded search tool. Bottle name: "
-            f"{drink_name or 'not supplied'}"
+            "no grounded search tool. "
+            f"Bottle name: {drink_name or 'not supplied'}. "
+            f"Drinker: {drinker}."
         )
         if photo is None:
             user_content = prompt
@@ -195,8 +205,9 @@ class ConfiguredAnalysisService:
             {
                 "role": "system",
                 "content": (
-                    "You are a knowledgeable, careful drinks guide. Return valid JSON "
-                    "matching the requested schema and completeness requirements."
+                    "You are Hamish, a cantankerous but knowledgeable drinks guide. "
+                    "Return valid JSON matching the requested schema and completeness "
+                    "requirements, with the persona guidance from the user message."
                 ),
             },
             {"role": "user", "content": user_content},

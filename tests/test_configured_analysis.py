@@ -71,7 +71,7 @@ def test_configured_text_analysis_uses_chat_completions_and_never_fabricates_sou
         transport=httpx.MockTransport(handler), resolver=public_resolver
     )
     service = ConfiguredAnalysisService(configured_database(tmp_path), providers)
-    result = service.analyze("Known bottle", photo=None)
+    result = service.analyze("Me", "Known bottle", photo=None)
 
     assert result.identified_title == "Verified bottle"
     assert result.sources == []
@@ -85,6 +85,10 @@ def test_configured_text_analysis_uses_chat_completions_and_never_fabricates_sou
     assert payload["response_format"] == {"type": "json_object"}
     assert "Known bottle" in str(payload["messages"])
     prompt = str(payload["messages"])
+    assert "You are Hamish" in prompt
+    assert "cantankerous" in prompt
+    assert "step back in quality" in prompt
+    assert "Drinker: Me" in prompt
     assert "not a label transcription or terse catalogue entry" in prompt
     assert "Overview: 75–120 words" in prompt
     assert "Context: 110–180 words" in prompt
@@ -166,6 +170,7 @@ def test_configured_photo_analysis_sends_a_data_uri_to_compatible_vision_model(
         ),
     )
     result = service.analyze(
+        "Wife",
         None,
         PhotoInput(
             filename="label.png",
@@ -175,6 +180,7 @@ def test_configured_photo_analysis_sends_a_data_uri_to_compatible_vision_model(
     )
 
     user_content = seen["payload"]["messages"][1]["content"]
+    assert "Drinker: Wife" in user_content[0]["text"]
     assert result.identified_title == "Photo bottle"
     assert user_content[1]["type"] == "image_url"
     assert user_content[1]["image_url"]["url"].startswith("data:image/png;base64,")

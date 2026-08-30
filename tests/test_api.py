@@ -271,7 +271,7 @@ def test_feedback_for_unknown_analysis_is_rejected(tmp_path):
 
 def test_analysis_service_can_be_replaced_at_app_boundary(tmp_path):
     class ReplacementService:
-        def analyze(self, drink_name, photo):
+        def analyze(self, drinker, drink_name, photo):
             return AnalysisContent(
                 identified_title="Replacement result",
                 region="Test region",
@@ -299,7 +299,8 @@ def test_analysis_service_receives_uploaded_photo_content(tmp_path):
     captured = {}
 
     class ReplacementService:
-        def analyze(self, drink_name, photo):
+        def analyze(self, drinker, drink_name, photo):
+            captured["drinker"] = drinker
             captured["drink_name"] = drink_name
             captured["photo"] = photo
             return AnalysisContent(
@@ -329,6 +330,7 @@ def test_analysis_service_receives_uploaded_photo_content(tmp_path):
         )
 
     assert response.status_code == 201
+    assert captured["drinker"] == "Me"
     assert captured["drink_name"] is None
     assert captured["photo"].content == b"\x89PNG\r\n\x1a\nimage-bytes"
     assert captured["photo"].content_type == "image/png"
