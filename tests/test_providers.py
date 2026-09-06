@@ -3,6 +3,7 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
@@ -395,6 +396,10 @@ def test_elevenlabs_tts_uses_selected_voice_model_and_output_format():
     request = seen["request"]
     assert audio == b"ID3-safe-audio"
     assert request.method == "POST"
+    assert request.url.host == "93.184.216.34"
+    assert request.headers["host"] == "api.elevenlabs.io"
+    assert request.headers["connection"] == "close"
+    assert request.extensions["sni_hostname"] == "api.elevenlabs.io"
     assert request.url.path == "/v1/text-to-speech/voice-id"
     assert request.url.params["output_format"] == "mp3_44100_128"
     assert request.headers["xi-api-key"] == "tts-key-canary"
@@ -402,6 +407,241 @@ def test_elevenlabs_tts_uses_selected_voice_model_and_output_format():
         "text": "A short preview.",
         "model_id": "eleven_multilingual_v2",
     }
+
+
+def test_full_narration_can_take_25_seconds_without_slowing_discovery():
+    clock = [0.0]
+
+    def handler(request):
+        if request.method == "POST":
+            # Reproduce a full review waiting 25 seconds for response headers.
+            if request.extensions["timeout"]["read"] < 25.0:
+                raise httpx.ReadTimeout(
+                    "full narration still generating", request=request
+                )
+            clock[0] += 25.0
+            return httpx.Response(200, content=b"ID3-full-narration")
+        assert request.extensions["timeout"]["read"] <= 15.0
+        return httpx.Response(200, json=[])
+
+    client = ProviderClient(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        monotonic=lambda: clock[0],
+    )
+    try:
+        assert (
+            client.synthesize_speech(
+                base_url="https://api.elevenlabs.io",
+                api_key="tts-key-canary",
+                voice_id="voice-id",
+                text="A full saved review. " * 150,
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+            )
+            == b"ID3-full-narration"
+        )
+        assert client.discover_tts_models("https://api.elevenlabs.io", "key") == []
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("elapsed", [119.0, 121.0])
+def test_speech_keeps_its_120_second_deadline_during_streaming(elapsed):
+    clock = [0.0]
+
+    class SlowAudio(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"ID3"
+            clock[0] = elapsed
+            yield b"-audio"
+
+    def handler(request):
+        assert request.extensions["timeout"]["read"] == 120.0
+        assert request.extensions["timeout"]["connect"] == 5.0
+        assert request.extensions["timeout"]["write"] == 15.0
+        return httpx.Response(200, stream=SlowAudio())
+
+    client = ProviderClient(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        monotonic=lambda: clock[0],
+    )
+    try:
+        kwargs = {
+            "base_url": "https://api.elevenlabs.io",
+            "api_key": "tts-key-canary",
+            "voice_id": "voice-id",
+            "text": "A full saved review.",
+            "model_id": "eleven_multilingual_v2",
+            "output_format": "mp3_44100_128",
+        }
+        if elapsed > 120.0:
+            with pytest.raises(ProviderError, match="ElevenLabs timed out"):
+                client.synthesize_speech(**kwargs)
+        else:
+            assert client.synthesize_speech(**kwargs) == b"ID3-audio"
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("phase", ["headers", "body"])
+@pytest.mark.parametrize("dns_delay", [0.0, 0.2])
+def test_speech_deadline_cancels_blocked_http_reads(monkeypatch, phase, dns_delay):
+    disconnected = threading.Event()
+    partial_sent = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            if phase == "body":
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.flush()
+            # Reset the inactivity timer partway through the remaining budget,
+            # then block: checking the deadline only after reads is insufficient.
+            time.sleep(0.35 - dns_delay / 2)
+            self.wfile.write(b"HTTP/1.1 200 OK\r\n" if phase == "headers" else b"ID3")
+            self.wfile.flush()
+            partial_sent.set()
+            self.connection.settimeout(2)
+            if self.connection.recv(1) == b"":
+                disconnected.set()
+
+        def log_message(self, *args):
+            pass
+
+    def resolver(host, port, *, type):
+        time.sleep(dns_delay)
+        return public_resolver(host, port, type=type)
+
+    # Exercise real HTTPX sockets, not MockTransport's non-blocking responses.
+    # Only the final URL is redirected to this local fixture; DNS validation and
+    # the deadline it establishes still run unchanged.
+    monkeypatch.setenv("NO_PROXY", "*")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = ProviderClient(
+        resolver=resolver,
+        speech_total_timeout=0.6,
+        max_concurrency=1,
+        capacity_wait_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        client,
+        "_url",
+        lambda *args: f"http://127.0.0.1:{server.server_port}/speech",
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(ProviderError, match="^ElevenLabs timed out\\.$"):
+            client.synthesize_speech(
+                base_url="https://api.elevenlabs.io",
+                api_key="tts-key-canary",
+                voice_id="voice-id",
+                text="A full saved review.",
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+            )
+        elapsed = time.monotonic() - started
+        assert partial_sent.is_set(), "Must reach the blocked read under test"
+        assert elapsed < 0.75, f"0.6s speech budget took {elapsed:.3f}s"
+        assert disconnected.wait(0.2), "Timeout must close the actual socket"
+        with client._provider_slot():
+            pass  # The timed-out synthesis must release global capacity.
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_speech_deadline_bounds_capacity_wait_without_sending_request():
+    calls = []
+    client = ProviderClient(
+        transport=httpx.MockTransport(lambda request: calls.append(request)),
+        resolver=public_resolver,
+        speech_total_timeout=0.05,
+        max_concurrency=1,
+        capacity_wait_timeout=1.0,
+    )
+    try:
+        with client._provider_slot():
+            started = time.monotonic()
+            with pytest.raises(ProviderError, match="^ElevenLabs timed out\\.$"):
+                client.synthesize_speech(
+                    base_url="https://api.elevenlabs.io",
+                    api_key="tts-key-canary",
+                    voice_id="voice-id",
+                    text="A full saved review.",
+                    model_id="eleven_multilingual_v2",
+                    output_format="mp3_44100_128",
+                )
+            assert time.monotonic() - started < 0.3
+        assert calls == []
+        with client._provider_slot():
+            pass
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "content", "message"),
+    [
+        (302, b"provider-secret", "redirect"),
+        (401, b"provider-secret", "HTTP 401"),
+        (200, b"", "invalid audio"),
+        (200, "oversized", "invalid audio"),
+    ],
+)
+def test_speech_errors_close_stream_and_preserve_safety_limits(
+    status, content, message
+):
+    if content == "oversized":
+        content = b"x" * (10 * 1024 * 1024 + 1)
+    closed = []
+    calls = []
+
+    class Audio(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield content
+
+        async def aclose(self):
+            closed.append(True)
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(
+            status,
+            headers={"Location": "https://untrusted.example/steal"},
+            stream=Audio(),
+        )
+
+    client = ProviderClient(
+        transport=httpx.MockTransport(handler),
+        resolver=public_resolver,
+        max_concurrency=1,
+    )
+    try:
+        with pytest.raises(ProviderError, match=message) as caught:
+            client.synthesize_speech(
+                base_url="https://api.elevenlabs.io",
+                api_key="tts-key-canary",
+                voice_id="voice-id",
+                text="A full saved review.",
+                model_id="eleven_multilingual_v2",
+                output_format="mp3_44100_128",
+            )
+        assert "provider-secret" not in str(caught.value)
+        assert "tts-key-canary" not in str(caught.value)
+        assert len(calls) == 1
+        assert closed == [True]
+        with client._provider_slot():
+            pass
+    finally:
+        client.close()
 
 
 def test_elevenlabs_model_discovery_keeps_only_text_to_speech_models():

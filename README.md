@@ -58,7 +58,8 @@ The process applies conservative in-memory controls before billable provider wor
 
 - `WITG_PROVIDER_MAX_CONCURRENCY` (default `4`) limits simultaneous outbound calls globally.
 - `WITG_PROVIDER_REQUEST_BUDGET` (default `120`) and `WITG_PROVIDER_BUDGET_WINDOW_SECONDS` (default `60`) bound outbound requests per process window.
-- `WITG_PROVIDER_TOTAL_TIMEOUT_SECONDS` (default `20`) is a monotonic wall-clock deadline covering DNS, connection, and streamed response bodies; connect/read inactivity limits remain in force.
+- `WITG_PROVIDER_TOTAL_TIMEOUT_SECONDS` (default `20`) is a monotonic wall-clock deadline for metadata and model requests covering DNS, connection, and streamed response bodies; the read inactivity limit remains 15 seconds.
+- Speech synthesis (including previews) has its own 120-second total/read budget, with connect/write limits unchanged. The total budget includes DNS and capacity waiting; expiry cancels blocked network reads and closes the connection before releasing provider capacity. Full reviews can take longer than 15 seconds before ElevenLabs responds; a successful connection test only lists voices and does not exercise full-length synthesis.
 - `WITG_ANALYSIS_RATE_LIMIT` (default `10`) and `WITG_NARRATION_RATE_LIMIT` (default `6`) apply per trusted client identity during `WITG_RATE_LIMIT_WINDOW_SECONDS` (default `60`).
 - Identical concurrent narration requests are single-flight by analysis/settings fingerprint, so only one TTS call is made.
 

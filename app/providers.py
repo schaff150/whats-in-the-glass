@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 import json
 import socket
@@ -55,6 +56,7 @@ class ProviderClient:
         resolver: Callable[..., list[tuple[Any, ...]]] = socket.getaddrinfo,
         model_host_allowlist: set[str] | None = None,
         total_timeout: float = 20.0,
+        speech_total_timeout: float = 120.0,
         monotonic: Callable[[], float] = time.monotonic,
         max_concurrency: int = 4,
         capacity_wait_timeout: float = 1.0,
@@ -66,6 +68,7 @@ class ProviderClient:
             host.casefold() for host in (model_host_allowlist or set())
         }
         self._total_timeout = total_timeout
+        self._speech_total_timeout = speech_total_timeout
         self._monotonic = monotonic
         self._capacity = threading.BoundedSemaphore(max(1, max_concurrency))
         self._capacity_wait_timeout = max(0.0, capacity_wait_timeout)
@@ -78,6 +81,7 @@ class ProviderClient:
         self._dns_executor = ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="provider-dns"
         )
+        self._transport = transport
         self._client = httpx.Client(
             transport=transport,
             timeout=httpx.Timeout(15.0, connect=5.0, read=15.0, write=15.0),
@@ -100,9 +104,15 @@ class ProviderClient:
         return remaining
 
     def _validate_destination(
-        self, base_url: str, *, elevenlabs: bool = False
+        self,
+        base_url: str,
+        *,
+        elevenlabs: bool = False,
+        total_timeout: float | None = None,
     ) -> _Destination:
-        deadline = self._monotonic() + self._total_timeout
+        deadline = self._monotonic() + (
+            self._total_timeout if total_timeout is None else total_timeout
+        )
         try:
             clean = validate_base_url(
                 base_url, official_hosts=ELEVENLABS_HOSTS if elevenlabs else None
@@ -188,6 +198,7 @@ class ProviderClient:
         headers: dict[str, str] | None,
         *,
         elevenlabs: bool,
+        read_timeout: float = 15.0,
     ) -> tuple[dict[str, str], httpx.Timeout, dict[str, Any]]:
         remaining = self._remaining(destination.deadline, elevenlabs=elevenlabs)
         request_headers = dict(headers or {})
@@ -197,7 +208,7 @@ class ProviderClient:
         timeout = httpx.Timeout(
             remaining,
             connect=min(remaining, 5.0),
-            read=phase_timeout,
+            read=min(remaining, read_timeout),
             write=phase_timeout,
             pool=min(remaining, 5.0),
         )
@@ -207,7 +218,9 @@ class ProviderClient:
         return request_headers, timeout, extensions
 
     @contextmanager
-    def _provider_slot(self) -> Iterator[None]:
+    def _provider_slot(
+        self, *, deadline: float | None = None, elevenlabs: bool = False
+    ) -> Iterator[None]:
         now = self._monotonic()
         with self._request_times_lock:
             while (
@@ -223,12 +236,19 @@ class ProviderClient:
                     "The provider request budget is temporarily exhausted."
                 )
             self._request_times.append(now)
-        if not self._capacity.acquire(timeout=self._capacity_wait_timeout):
+        wait_timeout = self._capacity_wait_timeout
+        if deadline is not None:
+            wait_timeout = min(
+                wait_timeout, self._remaining(deadline, elevenlabs=elevenlabs)
+            )
+        if not self._capacity.acquire(timeout=wait_timeout):
             with self._request_times_lock:
                 try:
                     self._request_times.remove(now)
                 except ValueError:
                     pass
+            if deadline is not None:
+                self._remaining(deadline, elevenlabs=elevenlabs)
             raise ProviderCapacityError("The provider is busy. Try again shortly.")
         try:
             yield
@@ -435,44 +455,81 @@ class ProviderClient:
         model_id: str,
         output_format: str,
     ) -> bytes:
-        destination = self._validate_destination(base_url, elevenlabs=True)
+        # Full reviews take longer than metadata discovery or short previews.
+        destination = self._validate_destination(
+            base_url, elevenlabs=True, total_timeout=self._speech_total_timeout
+        )
         if not voice_id or len(voice_id) > 200 or output_format != "mp3_44100_128":
             raise ProviderError("The voice settings are invalid.")
+        with self._provider_slot(deadline=destination.deadline, elevenlabs=True):
+            # Keep the public API synchronous, but cancel blocked network I/O at
+            # the deadline instead of abandoning a still-running worker thread.
+            return asyncio.run(
+                self._synthesize_speech(
+                    destination,
+                    api_key=api_key,
+                    voice_id=voice_id,
+                    text=text,
+                    model_id=model_id,
+                    output_format=output_format,
+                )
+            )
+
+    async def _synthesize_speech(
+        self,
+        destination: _Destination,
+        *,
+        api_key: str,
+        voice_id: str,
+        text: str,
+        model_id: str,
+        output_format: str,
+    ) -> bytes:
         suffix = f"v1/text-to-speech/{quote(voice_id, safe='')}"
-        headers, timeout, extensions = self._request_options(
-            destination,
-            {"Accept": "audio/mpeg", "xi-api-key": api_key},
-            elevenlabs=True,
-        )
         content = bytearray()
         try:
-            with (
-                self._provider_slot(),
-                self._client.stream(
-                    "POST",
-                    self._url(destination, suffix, {"output_format": output_format}),
-                    headers=headers,
-                    json={"text": text, "model_id": model_id},
-                    timeout=timeout,
-                    extensions=extensions,
-                ) as response,
-            ):
-                self._remaining(destination.deadline, elevenlabs=True)
-                if response.is_redirect:
-                    raise ProviderError(
-                        "ElevenLabs returned a redirect, which is not allowed."
-                    )
-                if response.status_code >= 400:
-                    raise ProviderError(
-                        f"ElevenLabs returned HTTP {response.status_code}."
-                    )
-                for chunk in response.iter_bytes():
+            # A per-call client is closed before asyncio.run closes its loop and
+            # before the synchronous wrapper releases provider capacity.
+            async with httpx.AsyncClient(
+                transport=self._transport, follow_redirects=False
+            ) as client:
+                headers, timeout, extensions = self._request_options(
+                    destination,
+                    {"Accept": "audio/mpeg", "xi-api-key": api_key},
+                    elevenlabs=True,
+                    read_timeout=self._speech_total_timeout,
+                )
+                async with (
+                    asyncio.timeout(
+                        self._remaining(destination.deadline, elevenlabs=True)
+                    ),
+                    client.stream(
+                        "POST",
+                        self._url(
+                            destination, suffix, {"output_format": output_format}
+                        ),
+                        headers=headers,
+                        json={"text": text, "model_id": model_id},
+                        timeout=timeout,
+                        extensions=extensions,
+                    ) as response,
+                ):
                     self._remaining(destination.deadline, elevenlabs=True)
-                    content.extend(chunk)
-                    if len(content) > MAX_AUDIO_BYTES:
-                        raise ProviderError("ElevenLabs returned invalid audio.")
-                self._remaining(destination.deadline, elevenlabs=True)
-        except httpx.TimeoutException as error:
+                    if response.is_redirect:
+                        raise ProviderError(
+                            "ElevenLabs returned a redirect, which is not allowed."
+                        )
+                    if response.status_code >= 400:
+                        raise ProviderError(
+                            f"ElevenLabs returned HTTP {response.status_code}."
+                        )
+                    async for chunk in response.aiter_bytes():
+                        self._remaining(destination.deadline, elevenlabs=True)
+                        content.extend(chunk)
+                        if len(content) > MAX_AUDIO_BYTES:
+                            raise ProviderError("ElevenLabs returned invalid audio.")
+                    self._remaining(destination.deadline, elevenlabs=True)
+        except (TimeoutError, httpx.TimeoutException) as error:
             raise ProviderError("ElevenLabs timed out.") from error
         except httpx.HTTPError as error:
             raise ProviderError("ElevenLabs could not be reached.") from error
