@@ -90,9 +90,10 @@ def test_configured_text_analysis_uses_chat_completions_and_never_fabricates_sou
     assert "step back in quality" in prompt
     assert "Drinker: Me" in prompt
     assert "not a label transcription or terse catalogue entry" in prompt
-    assert "Overview: 75–120 words" in prompt
-    assert "Context: 110–180 words" in prompt
-    assert "Tasting notes: 75–130 words" in prompt
+    assert "Overview: 60–95 words" in prompt
+    assert "Context: 85–145 words" in prompt
+    assert "Tasting notes: 60–105 words" in prompt
+    assert "These word ranges are flexible guides, not hard limits" in prompt
     assert "serving suggestion" in prompt
     assert "Do not invent" in prompt
 
