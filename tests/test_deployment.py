@@ -96,3 +96,24 @@ def test_operator_and_architecture_docs_cover_runbook_and_demo_boundaries():
     assert "single-flight" in architecture
     assert "trusted proxy" in architecture
     assert "172.17.0.1" in architecture
+
+
+def test_voicebox_deployment_is_explicit_local_keyless_and_revision_labelled():
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    environment = compose["services"]["whats-in-the-glass"]["environment"]
+    assert (
+        environment["WITG_VOICEBOX_HOST_ALLOWLIST"]
+        == "${WITG_VOICEBOX_HOST_ALLOWLIST:-}"
+    )
+    assert (
+        environment["WITG_VOICEBOX_SPEECH_TIMEOUT_SECONDS"]
+        == "${WITG_VOICEBOX_SPEECH_TIMEOUT_SECONDS:-600}"
+    )
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Voicebox" in readme
+    assert "no automatic ElevenLabs fallback" in readme
+    assert "WITG_VOICEBOX_HOST_ALLOWLIST" in readme
+    overlay = (ROOT / "deploy" / "Dockerfile.app-only").read_text(encoding="utf-8")
+    assert "FROM ${WITG_RUNTIME_IMAGE}" in overlay
+    assert "org.opencontainers.image.revision" in overlay
+    assert "COPY --chown=witg:witg app /app/app" in overlay

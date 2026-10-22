@@ -48,7 +48,7 @@ class ModelSettingsView(BaseModel):
 
 
 class VoiceSettingsView(BaseModel):
-    provider: Literal["elevenlabs"] = "elevenlabs"
+    provider: Literal["elevenlabs", "voicebox"] = "elevenlabs"
     display_name: str = "ElevenLabs"
     base_url: str = "https://api.elevenlabs.io"
     voice_id: str | None = None
@@ -122,19 +122,27 @@ ELEVENLABS_HOSTS = {
 
 
 class VoiceSettingsUpdate(BaseModel):
-    provider: Literal["elevenlabs"] = "elevenlabs"
+    provider: Literal["elevenlabs", "voicebox"] = "elevenlabs"
     base_url: str = Field(max_length=500)
     voice_id: str | None = Field(default=None, max_length=200)
     voice_name: str | None = Field(default=None, max_length=200)
     tts_model_id: str = Field(min_length=1, max_length=200)
-    output_format: Literal["mp3_44100_128"] = "mp3_44100_128"
+    output_format: Literal["mp3_44100_128", "mp3"] = "mp3_44100_128"
     api_key: str | None = Field(default=None, max_length=4096, repr=False)
     clear_api_key: bool = False
 
-    @field_validator("base_url")
-    @classmethod
-    def valid_base_url(cls, value: str) -> str:
-        return validate_base_url(value, official_hosts=ELEVENLABS_HOSTS)
+    @model_validator(mode="after")
+    def valid_voice_configuration(self):
+        self.base_url = validate_base_url(
+            self.base_url,
+            official_hosts=ELEVENLABS_HOSTS if self.provider == "elevenlabs" else None,
+        )
+        expected_format = "mp3" if self.provider == "voicebox" else "mp3_44100_128"
+        if self.output_format != expected_format:
+            raise ValueError("The output format does not match the voice provider.")
+        if self.provider == "voicebox" and self.api_key:
+            raise ValueError("Voicebox does not use API keys.")
+        return self
 
     @field_validator("api_key")
     @classmethod
@@ -158,7 +166,11 @@ class ProviderProbeRequest(BaseModel):
         return value.strip() if value else None
 
 
-class VoicePreviewRequest(BaseModel):
+class VoiceProbeRequest(ProviderProbeRequest):
+    provider: Literal["elevenlabs", "voicebox"] | None = None
+
+
+class VoicePreviewRequest(VoiceProbeRequest):
     text: str = Field(
         default="This is a short What’s in the Glass voice preview.",
         min_length=1,
@@ -168,7 +180,7 @@ class VoicePreviewRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=4096, repr=False)
     voice_id: str | None = Field(default=None, max_length=200)
     tts_model_id: str | None = Field(default=None, max_length=200)
-    output_format: Literal["mp3_44100_128"] | None = None
+    output_format: Literal["mp3_44100_128", "mp3"] | None = None
 
     @field_validator("api_key")
     @classmethod

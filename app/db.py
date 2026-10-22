@@ -261,25 +261,45 @@ class Database:
         output_format: str,
         api_key: str | None = None,
         clear_api_key: bool = False,
+        provider: str = "elevenlabs",
     ) -> SettingsView:
+        if provider not in {"elevenlabs", "voicebox"}:
+            raise ValueError("The voice provider is invalid.")
+        if provider == "voicebox" and api_key:
+            raise ValueError("Voicebox does not use API keys.")
         if api_key and clear_api_key:
             raise ValueError("A provider key cannot be replaced and cleared together.")
         encrypted_key = (
             self._encrypt_secret(api_key, "voice_api_key") if api_key else None
         )
         with self.connect() as connection:
-            current_url = connection.execute(
-                "SELECT voice_base_url FROM connection_settings WHERE id = 1"
-            ).fetchone()[0]
+            current = connection.execute(
+                "SELECT voice_provider, voice_base_url FROM connection_settings WHERE id = 1"
+            ).fetchone()
             connection.execute(
                 """
-                UPDATE connection_settings SET voice_base_url = ?, voice_id = ?,
-                    voice_name = ?, tts_model_id = ?, output_format = ?
+                UPDATE connection_settings SET voice_provider = ?, voice_display_name = ?,
+                    voice_base_url = ?, voice_id = ?, voice_name = ?,
+                    tts_model_id = ?, output_format = ?
                 WHERE id = 1
                 """,
-                (base_url, voice_id, voice_name, tts_model_id, output_format),
+                (
+                    provider,
+                    "Voicebox" if provider == "voicebox" else "ElevenLabs",
+                    base_url,
+                    voice_id,
+                    voice_name,
+                    tts_model_id,
+                    output_format,
+                ),
             )
-            if api_key or clear_api_key or current_url != base_url:
+            if (
+                api_key
+                or clear_api_key
+                or provider == "voicebox"
+                or current["voice_provider"] != provider
+                or current["voice_base_url"] != base_url
+            ):
                 connection.execute(
                     "UPDATE connection_settings SET voice_api_key_encrypted = ? WHERE id = 1",
                     (encrypted_key,),

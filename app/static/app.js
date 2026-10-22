@@ -272,7 +272,128 @@ async function settingsJsonFetch(url, options = {}) {
   return payload;
 }
 
+const voiceProviderDefaults = {
+  elevenlabs: {
+    name: "ElevenLabs",
+    baseUrl: "https://api.elevenlabs.io",
+    model: "eleven_multilingual_v2",
+    format: "mp3_44100_128",
+    endpoints: [
+      "https://api.elevenlabs.io",
+      "https://api.us.elevenlabs.io",
+      "https://api.eu.residency.elevenlabs.io",
+      "https://api.in.residency.elevenlabs.io",
+      "https://api.sg.residency.elevenlabs.io",
+    ],
+  },
+  voicebox: {
+    name: "Voicebox (local)",
+    baseUrl: "http://192.168.0.87:17600",
+    model: "luxtts",
+    format: "mp3",
+    endpoints: ["http://192.168.0.87:17600"],
+  },
+};
+
+function selectedVoiceProvider() {
+  return document.getElementById("voiceProvider").value;
+}
+
+function voiceConnectionStatus(apiKeyConfigured = false) {
+  if (selectedVoiceProvider() === "voicebox") {
+    return "Voicebox is local: no API key and no ElevenLabs fallback.";
+  }
+  return apiKeyConfigured
+    ? "A write-only ElevenLabs key is configured."
+    : "No ElevenLabs key is configured.";
+}
+
+function voiceOperationStatus(message) {
+  return selectedVoiceProvider() === "voicebox"
+    ? `${message} ${voiceConnectionStatus()}`
+    : `ElevenLabs: ${message}`;
+}
+
+function configureVoiceProvider() {
+  const provider = selectedVoiceProvider();
+  const defaults = voiceProviderDefaults[provider];
+  const keyless = provider === "voicebox";
+  document.getElementById("voiceProviderTitle").textContent = defaults.name;
+  document.getElementById("voiceKeyControls").hidden = keyless;
+  document.getElementById("voiceApiKey").disabled = keyless;
+  document.getElementById("clearVoiceKey").disabled = keyless;
+  document.getElementById("voiceEndpointHelp").textContent = keyless
+    ? "Voicebox is local: no API key and no ElevenLabs fallback. Use the server root URL, without /v1."
+    : "Use an official ElevenLabs API origin. Changing the endpoint clears the saved key unless replaced.";
+  const urls = document.getElementById("voiceBaseUrlOptions");
+  urls.replaceChildren();
+  defaults.endpoints.forEach((url) => {
+    const option = document.createElement("option");
+    option.value = url;
+    urls.append(option);
+  });
+  const format = document.createElement("option");
+  format.value = defaults.format;
+  format.textContent = keyless ? "MP3" : "MP3 44.1 kHz / 128 kbps";
+  document.getElementById("outputFormat").replaceChildren(format);
+}
+
+let voiceSelectionEndpoint = "";
+let voiceConnectionRevision = 0;
+let voiceSettingsWriteQueue = Promise.resolve();
+
+async function voiceSettingsFetch(url, options, revision = voiceConnectionRevision) {
+  try {
+    const result = await settingsJsonFetch(url, options);
+    return revision === voiceConnectionRevision ? result : null;
+  } catch (error) {
+    if (revision === voiceConnectionRevision) {
+      throw error;
+    }
+    return null;
+  }
+}
+
+function resetVoiceChoices() {
+  const option = document.createElement("option");
+  option.value = "";
+  option.textContent = "Refresh voices to choose";
+  option.dataset.placeholder = "true";
+  document.getElementById("voiceId").replaceChildren(option);
+  document.getElementById("ttsModelOptions").replaceChildren();
+}
+
+function changeVoiceProvider() {
+  voiceConnectionRevision += 1;
+  const defaults = voiceProviderDefaults[selectedVoiceProvider()];
+  document.getElementById("voiceApiKey").value = "";
+  resetVoiceChoices();
+  configureVoiceProvider();
+  document.getElementById("voiceBaseUrl").value = defaults.baseUrl;
+  voiceSelectionEndpoint = defaults.baseUrl;
+  document.getElementById("ttsModelId").value = defaults.model;
+  document.getElementById("voiceStatus").textContent = selectedVoiceProvider() === "voicebox"
+    ? `${voiceConnectionStatus()} Selection not saved.`
+    : "ElevenLabs selected. Selection not saved; enter a key if needed, then save.";
+}
+
+function changeVoiceEndpoint() {
+  const endpoint = document.getElementById("voiceBaseUrl").value.trim();
+  if (endpoint === voiceSelectionEndpoint) {
+    return;
+  }
+  voiceConnectionRevision += 1;
+  voiceSelectionEndpoint = endpoint;
+  document.getElementById("voiceApiKey").value = "";
+  resetVoiceChoices();
+  document.getElementById("ttsModelId").value = voiceProviderDefaults[selectedVoiceProvider()].model;
+  document.getElementById("voiceStatus").textContent = selectedVoiceProvider() === "voicebox"
+    ? `${voiceConnectionStatus()} Endpoint changed; selection not saved.`
+    : "ElevenLabs endpoint changed; selection not saved. Enter a replacement key if needed.";
+}
+
 function populateSettings(settings) {
+  voiceConnectionRevision += 1;
   document.getElementById("modelDisplayName").value = settings.model.display_name;
   document.getElementById("modelBaseUrl").value = settings.model.base_url;
   document.getElementById("modelId").value = settings.model.model_id || "";
@@ -280,7 +401,11 @@ function populateSettings(settings) {
   document.getElementById("modelStatus").textContent = settings.model.api_key_configured
     ? "A write-only model key is configured."
     : "No model key is configured.";
+  document.getElementById("voiceProvider").value = settings.voice.provider || "elevenlabs";
+  configureVoiceProvider();
   document.getElementById("voiceBaseUrl").value = settings.voice.base_url;
+  voiceSelectionEndpoint = settings.voice.base_url.trim();
+  document.getElementById("ttsModelOptions").replaceChildren();
   document.getElementById("ttsModelId").value = settings.voice.tts_model_id;
   document.getElementById("outputFormat").value = settings.voice.output_format;
   document.getElementById("voiceApiKey").value = "";
@@ -293,9 +418,7 @@ function populateSettings(settings) {
     option.dataset.placeholder = "true";
   }
   voiceSelect.append(option);
-  document.getElementById("voiceStatus").textContent = settings.voice.api_key_configured
-    ? "A write-only ElevenLabs key is configured."
-    : "No ElevenLabs key is configured.";
+  document.getElementById("voiceStatus").textContent = voiceConnectionStatus(settings.voice.api_key_configured);
 }
 
 async function loadConnectionSettings() {
@@ -318,17 +441,19 @@ function modelPayload(clearApiKey = false) {
 function voicePayload(clearApiKey = false) {
   const voiceSelect = document.getElementById("voiceId");
   const placeholder = voiceSelect.selectedOptions[0]?.dataset.placeholder === "true";
+  const provider = selectedVoiceProvider();
+  const keyless = provider === "voicebox";
   return {
-    provider: "elevenlabs",
-    base_url: document.getElementById("voiceBaseUrl").value,
+    provider,
+    base_url: document.getElementById("voiceBaseUrl").value.trim(),
     voice_id: placeholder ? null : voiceSelect.value || null,
     voice_name: placeholder ? null : voiceSelect.selectedOptions[0]?.textContent || null,
     tts_model_id: document.getElementById("ttsModelId").value.trim(),
     output_format: document.getElementById("outputFormat").value,
-    api_key: clearApiKey
+    api_key: clearApiKey || keyless
       ? null
       : document.getElementById("voiceApiKey").value.trim() || null,
-    clear_api_key: clearApiKey,
+    clear_api_key: clearApiKey || keyless,
   };
 }
 
@@ -344,14 +469,22 @@ async function saveModelSettings(clearApiKey = false) {
 }
 
 async function saveVoiceSettings(clearApiKey = false) {
-  const result = await settingsJsonFetch("/api/settings/voice", {
+  const revision = ++voiceConnectionRevision;
+  const options = {
     method: "PUT",
     body: JSON.stringify(voicePayload(clearApiKey)),
+  };
+  document.getElementById("voiceStatus").textContent = voiceOperationStatus("Saving voice settings…");
+  const save = voiceSettingsWriteQueue.then(async () => {
+    const result = await voiceSettingsFetch("/api/settings/voice", options, revision);
+    if (!result) {
+      return;
+    }
+    document.getElementById("voiceApiKey").value = "";
+    document.getElementById("voiceStatus").textContent = `Voice settings saved. ${voiceConnectionStatus(result.api_key_configured)}`;
   });
-  document.getElementById("voiceApiKey").value = "";
-  document.getElementById("voiceStatus").textContent = result.api_key_configured
-    ? "Voice settings saved; a key is configured."
-    : "Voice settings saved; no key is configured.";
+  voiceSettingsWriteQueue = save.catch(() => {});
+  return save;
 }
 
 async function modelAction(path) {
@@ -376,13 +509,14 @@ async function modelAction(path) {
 }
 
 async function voiceAction(path) {
-  const result = await settingsJsonFetch(path, {
+  const { provider, base_url, api_key } = voicePayload();
+  const result = await voiceSettingsFetch(path, {
     method: "POST",
-    body: JSON.stringify({
-      base_url: document.getElementById("voiceBaseUrl").value,
-      api_key: document.getElementById("voiceApiKey").value.trim() || null,
-    }),
+    body: JSON.stringify({ provider, base_url, api_key }),
   });
+  if (!result) {
+    return document.getElementById("voiceStatus").textContent;
+  }
   if (result.models) {
     const options = document.getElementById("ttsModelOptions");
     options.replaceChildren();
@@ -392,7 +526,7 @@ async function voiceAction(path) {
       option.label = model.name || model.model_id;
       options.append(option);
     });
-    return `${result.models.length} TTS models found.`;
+    return voiceOperationStatus(`${result.models.length} TTS models found.`);
   }
   if (result.voices) {
     const select = document.getElementById("voiceId");
@@ -405,9 +539,9 @@ async function voiceAction(path) {
       option.selected = voice.voice_id === selected;
       select.append(option);
     });
-    return `${result.voices.length} voices found.`;
+    return voiceOperationStatus(`${result.voices.length} voices found.`);
   }
-  return `Connection succeeded; ${result.voices_count} voices found.`;
+  return voiceOperationStatus(`Connection succeeded; ${result.voices_count} voices found.`);
 }
 
 async function generateNarration() {
@@ -456,6 +590,10 @@ document.querySelectorAll(".star").forEach((button) => {
 document.getElementById("saveFeedback").addEventListener("click", saveFeedback);
 document.getElementById("audioButton").addEventListener("click", generateNarration);
 
+document.getElementById("voiceProvider").addEventListener("change", changeVoiceProvider);
+document.getElementById("voiceBaseUrl").addEventListener("input", changeVoiceEndpoint);
+document.getElementById("voiceBaseUrl").addEventListener("change", changeVoiceEndpoint);
+
 document.getElementById("modelSettingsForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -470,7 +608,7 @@ document.getElementById("voiceSettingsForm").addEventListener("submit", async (e
   try {
     await saveVoiceSettings();
   } catch (error) {
-    document.getElementById("voiceStatus").textContent = error.message;
+    document.getElementById("voiceStatus").textContent = voiceOperationStatus(error.message);
   }
 });
 
@@ -486,7 +624,7 @@ document.getElementById("clearVoiceKey").addEventListener("click", async () => {
   try {
     await saveVoiceSettings(true);
   } catch (error) {
-    document.getElementById("voiceStatus").textContent = error.message;
+    document.getElementById("voiceStatus").textContent = voiceOperationStatus(error.message);
   }
 });
 
@@ -513,7 +651,7 @@ document.getElementById("refreshVoices").addEventListener("click", async () => {
   try {
     statusElement.textContent = await voiceAction("/api/settings/voice/voices");
   } catch (error) {
-    statusElement.textContent = error.message;
+    statusElement.textContent = voiceOperationStatus(error.message);
   }
 });
 
@@ -522,7 +660,7 @@ document.getElementById("refreshVoiceModels").addEventListener("click", async ()
   try {
     statusElement.textContent = await voiceAction("/api/settings/voice/models");
   } catch (error) {
-    statusElement.textContent = error.message;
+    statusElement.textContent = voiceOperationStatus(error.message);
   }
 });
 
@@ -531,14 +669,19 @@ document.getElementById("testVoice").addEventListener("click", async () => {
   try {
     statusElement.textContent = await voiceAction("/api/settings/voice/test");
   } catch (error) {
-    statusElement.textContent = error.message;
+    statusElement.textContent = voiceOperationStatus(error.message);
   }
 });
 
 document.getElementById("previewVoice").addEventListener("click", async () => {
   const statusElement = document.getElementById("voiceStatus");
+  const revision = voiceConnectionRevision;
   let revokePreviewUrl = null;
   try {
+    const selection = voicePayload();
+    if (!selection.voice_id) {
+      throw new Error("Refresh voices and select a voice before previewing.");
+    }
     const response = await fetch("/api/settings/voice/preview", {
       method: "POST",
       headers: {
@@ -547,18 +690,26 @@ document.getElementById("previewVoice").addEventListener("click", async () => {
       },
       body: JSON.stringify({
         text: "Here’s a short preview from What’s in the Glass.",
-        base_url: document.getElementById("voiceBaseUrl").value,
-        api_key: document.getElementById("voiceApiKey").value.trim() || null,
-        voice_id: document.getElementById("voiceId").value || null,
-        tts_model_id: document.getElementById("ttsModelId").value.trim(),
-        output_format: document.getElementById("outputFormat").value,
+        provider: selection.provider,
+        base_url: selection.base_url,
+        api_key: selection.api_key,
+        voice_id: selection.voice_id,
+        tts_model_id: selection.tts_model_id,
+        output_format: selection.output_format,
       }),
     });
+    if (revision !== voiceConnectionRevision) {
+      return;
+    }
     if (!response.ok) {
       const payload = await response.json();
       throw new Error(errorMessage(payload, "Voice preview failed."));
     }
-    const url = URL.createObjectURL(await response.blob());
+    const blob = await response.blob();
+    if (revision !== voiceConnectionRevision) {
+      return;
+    }
+    const url = URL.createObjectURL(blob);
     let revoked = false;
     revokePreviewUrl = () => {
       if (!revoked) {
@@ -570,10 +721,17 @@ document.getElementById("previewVoice").addEventListener("click", async () => {
     preview.addEventListener("ended", revokePreviewUrl, { once: true });
     preview.addEventListener("error", revokePreviewUrl, { once: true });
     await preview.play();
-    statusElement.textContent = "Voice preview playing.";
+    if (revision !== voiceConnectionRevision) {
+      preview.pause();
+      revokePreviewUrl();
+      return;
+    }
+    statusElement.textContent = voiceOperationStatus("Voice preview playing.");
   } catch (error) {
     revokePreviewUrl?.();
-    statusElement.textContent = error.message;
+    if (revision === voiceConnectionRevision) {
+      statusElement.textContent = voiceOperationStatus(error.message);
+    }
   }
 });
 

@@ -9,8 +9,8 @@ def test_home_shell_is_accessible_and_text_first(tmp_path):
 
     assert response.status_code == 200
     html = response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=7">' in html
-    assert '<script src="/static/app.js?v=7" defer></script>' in html
+    assert '<link rel="stylesheet" href="/static/styles.css?v=8">' in html
+    assert '<script src="/static/app.js?v=8" defer></script>' in html
     assert response.headers["cache-control"] == "no-cache"
     assert 'aria-label="Choose drinker"' in html
     assert 'data-drinker="Me" aria-pressed="true">me</button>' in html
@@ -119,9 +119,9 @@ def test_manifest_icons_and_service_worker_are_served(tmp_path):
 
     assert worker_response.status_code == 200
     worker = worker_response.text
-    assert 'const CACHE_NAME = "witg-shell-v7"' in worker
-    assert '"/static/app.js?v=7"' in worker
-    assert '"/static/styles.css?v=7"' in worker
+    assert 'const CACHE_NAME = "witg-shell-v8"' in worker
+    assert '"/static/app.js?v=8"' in worker
+    assert '"/static/styles.css?v=8"' in worker
     assert 'url.pathname.startsWith("/api/")' in worker
     assert "fetch(event.request)" in worker
     assert "cache.put" in worker
@@ -214,13 +214,7 @@ def test_client_renders_structured_errors_and_preview_revokes_blob_on_all_outcom
         script = client.get("/static/app.js").text
 
     assert 'typeof payload?.detail?.message === "string"' in script
-    assert 'base_url: document.getElementById("voiceBaseUrl").value' in script
-    assert 'voice_id: document.getElementById("voiceId").value || null' in script
-    assert 'tts_model_id: document.getElementById("ttsModelId").value.trim()' in script
-    assert 'output_format: document.getElementById("outputFormat").value' in script
-    assert (
-        'api_key: document.getElementById("voiceApiKey").value.trim() || null' in script
-    )
+    # Provider, draft selection and key isolation execute in test_frontend_runtime.py.
     assert 'preview.addEventListener("error", revokePreviewUrl' in script
     assert 'preview.addEventListener("ended", revokePreviewUrl' in script
     assert "URL.revokeObjectURL(url)" in script

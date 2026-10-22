@@ -1,0 +1,7 @@
+# Application-only overlay: use only when runtime dependencies are unchanged.
+# Supply an exact existing runtime image ID or an immutable local rollback tag.
+ARG WITG_RUNTIME_IMAGE
+FROM ${WITG_RUNTIME_IMAGE}
+ARG VCS_REF
+LABEL org.opencontainers.image.revision="${VCS_REF}"
+COPY --chown=witg:witg app /app/app

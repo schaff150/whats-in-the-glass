@@ -28,17 +28,19 @@ class NarrationService:
             raise LookupError("Analysis not found.")
         settings = self._database.get_settings().voice
         if not settings.voice_id or not settings.tts_model_id:
-            raise NarrationConfigurationError(
-                "ElevenLabs voice settings are incomplete."
-            )
-        try:
-            api_key = self._database.get_voice_api_key()
-        except SecretConfigurationError as error:
-            raise NarrationConfigurationError(
-                "ElevenLabs credentials are unavailable."
-            ) from error
-        if not api_key:
-            raise NarrationConfigurationError("ElevenLabs credentials are incomplete.")
+            raise NarrationConfigurationError("Voice settings are incomplete.")
+        api_key = None
+        if settings.provider == "elevenlabs":
+            try:
+                api_key = self._database.get_voice_api_key()
+            except SecretConfigurationError as error:
+                raise NarrationConfigurationError(
+                    "ElevenLabs credentials are unavailable."
+                ) from error
+            if not api_key:
+                raise NarrationConfigurationError(
+                    "ElevenLabs credentials are incomplete."
+                )
         prose = self._narration_text(analysis)
         fingerprint_input = {
             "analysis_id": analysis.id,
@@ -48,6 +50,9 @@ class NarrationService:
             "tts_model_id": settings.tts_model_id,
             "output_format": settings.output_format,
         }
+        # Preserve existing ElevenLabs cache identities while separating local audio.
+        if settings.provider == "voicebox":
+            fingerprint_input["provider"] = settings.provider
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_input, sort_keys=True).encode()
         ).hexdigest()
@@ -78,13 +83,20 @@ class NarrationService:
                     self._flights[fingerprint] = (current_lock, current_users - 1)
 
     def _generate_uncached(
-        self, *, analysis_id: int, fingerprint: str, settings, api_key: str, prose: str
+        self,
+        *,
+        analysis_id: int,
+        fingerprint: str,
+        settings,
+        api_key: str | None,
+        prose: str,
     ) -> str:
         cached = self._database.get_narration(analysis_id, fingerprint)
         if cached is not None and self._safe_path(cached["file_name"]).is_file():
             self._database.mark_narration_used(cached["token"])
             return cached["token"]
         audio = self._providers.synthesize_speech(
+            provider=settings.provider,
             base_url=settings.base_url,
             api_key=api_key,
             voice_id=settings.voice_id,

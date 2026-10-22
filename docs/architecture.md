@@ -20,7 +20,7 @@ Browser / installed PWA
             │                 │
             ▼                 ▼
  WITG_DATA_DIR/       HTTPS provider APIs
- witg.sqlite3 + audio  (OpenAI-compatible / ElevenLabs)
+ witg.sqlite3 + audio  (OpenAI-compatible / Voicebox / optional ElevenLabs)
 ```
 
 `create_app` still accepts a replacement `AnalysisService`; existing embedding/tests can replace the runtime service. Without a replacement, `ConfiguredAnalysisService` selects the saved model dynamically and delegates to `DemoAnalysisService` until a model ID is complete. `PhotoInput` carries validated filename, MIME type, and bytes to either service.
@@ -54,7 +54,9 @@ Saved credentials are origin-bound during probes. Canonically equivalent saved U
 - Analysis: `POST {base_url}/chat/completions`, JSON-object response mode, optional data-URI image content.
 - Voices: `GET {base_url}/v2/voices`, `xi-api-key`, page size 100, `include_total_count=false`, bounded pagination driven by `has_more`/`next_page_token`, de-duplicated by `voice_id`, safe dropdown fields only.
 - TTS models: `GET {base_url}/v1/models`, retaining only official entries with `can_do_text_to_speech=true`.
-- TTS: `POST {base_url}/v1/text-to-speech/{voice_id}`, selected `model_id` and `output_format`, `xi-api-key`; preview accepts the complete unsaved first-time selection.
+- ElevenLabs TTS: `POST {base_url}/v1/text-to-speech/{voice_id}`, selected `model_id` and `output_format`, `xi-api-key`; preview accepts the complete unsaved first-time selection.
+- Voicebox: root base URL, `GET /profiles`, `GET /v1/models`, and `POST /v1/audio/speech` with `model`, profile ID in `voice`, narration in `input`, and `response_format=mp3`. No authentication headers, secret-storage dependency, or automatic ElevenLabs fallback. A provider switch clears the stored voice key; the model configuration is untouched.
+- Voicebox destinations use a separate exact `WITG_VOICEBOX_HOST_ALLOWLIST`, require private LAN addresses, and retain all forbidden-address and DNS-pinning protections. A model allowlist never authorizes Voicebox. Its CPU speech deadline is separately bounded by `WITG_VOICEBOX_SPEECH_TIMEOUT_SECONDS` (600 seconds by default); response MIME type and MP3 signature are checked before caching.
 
 Generic chat completion has no standardized grounded-search capability. Model output is strictly validated against `AnalysisContent`; malformed output returns a sanitized `502` and is not saved. `sources=[]` is forced for configured-model analyses so no generated text is relabelled as verified citations.
 
@@ -67,7 +69,7 @@ A global semaphore bounds simultaneous provider requests. A process-wide sliding
 3. Text submissions become a user prompt. Photos become OpenAI-compatible multimodal user content with an in-request data URI.
 4. Strict JSON is parsed and field-bounded before `Database.save_analysis`; provider failures never create fake rows.
 5. `POST /api/analyses/{id}/narration` builds citation-free prose from the stored result.
-6. A SHA-256 fingerprint binds the final prose, selected voice, endpoint, TTS model, and output format. The opaque digest names the MP3 and cache row.
+6. A SHA-256 fingerprint binds the final prose, selected voice, endpoint, TTS model, and output format. Voicebox additionally includes its provider ID; legacy ElevenLabs cache identities are preserved. The opaque digest names the MP3 and cache row.
 7. Existing matching audio is reused. Changed analysis/voice/TTS settings produce a new fingerprint and generation.
 8. `GET /api/audio/{token}` accepts only a 64-character hex token, requires a database reference, verifies the exact `<token>.mp3` filename under the narration directory, and never accepts arbitrary paths.
 

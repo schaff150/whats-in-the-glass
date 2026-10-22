@@ -53,8 +53,11 @@ class ProviderClient:
         self,
         *,
         transport: httpx.BaseTransport | None = None,
+        speech_transport: httpx.AsyncBaseTransport | None = None,
         resolver: Callable[..., list[tuple[Any, ...]]] = socket.getaddrinfo,
         model_host_allowlist: set[str] | None = None,
+        voicebox_host_allowlist: set[str] | None = None,
+        voicebox_speech_total_timeout: float = 600.0,
         total_timeout: float = 20.0,
         speech_total_timeout: float = 120.0,
         monotonic: Callable[[], float] = time.monotonic,
@@ -67,6 +70,10 @@ class ProviderClient:
         self._model_host_allowlist = {
             host.casefold() for host in (model_host_allowlist or set())
         }
+        self._voicebox_host_allowlist = {
+            host.casefold() for host in (voicebox_host_allowlist or set())
+        }
+        self._voicebox_speech_total_timeout = voicebox_speech_total_timeout
         self._total_timeout = total_timeout
         self._speech_total_timeout = speech_total_timeout
         self._monotonic = monotonic
@@ -82,6 +89,10 @@ class ProviderClient:
             max_workers=4, thread_name_prefix="provider-dns"
         )
         self._transport = transport
+        self._speech_transport = speech_transport
+        # Preserve dual-interface MockTransport injection, never sync-only I/O.
+        if speech_transport is None and isinstance(transport, httpx.AsyncBaseTransport):
+            self._speech_transport = transport
         self._client = httpx.Client(
             transport=transport,
             timeout=httpx.Timeout(15.0, connect=5.0, read=15.0, write=15.0),
@@ -108,6 +119,7 @@ class ProviderClient:
         base_url: str,
         *,
         elevenlabs: bool = False,
+        voicebox: bool = False,
         total_timeout: float | None = None,
     ) -> _Destination:
         deadline = self._monotonic() + (
@@ -123,7 +135,12 @@ class ProviderClient:
         host = (parsed.hostname or "").casefold()
         if host in {"metadata.google.internal", "metadata", "instance-data"}:
             raise ProviderError("The provider endpoint is not allowed.")
-        allowlisted = not elevenlabs and host in self._model_host_allowlist
+        allowlist = (
+            self._voicebox_host_allowlist if voicebox else self._model_host_allowlist
+        )
+        allowlisted = not elevenlabs and host in allowlist
+        if voicebox and not allowlisted:
+            raise ProviderError("The Voicebox endpoint is not allowed.")
         if parsed.scheme == "http" and not allowlisted:
             raise ProviderError("The provider endpoint is not allowed.")
         try:
@@ -166,7 +183,7 @@ class ProviderClient:
             )
             if always_forbidden or (ip.is_private and not allowlisted):
                 raise ProviderError("The provider endpoint is not allowed.")
-            if parsed.scheme == "http" and not ip.is_private:
+            if (voicebox or parsed.scheme == "http") and not ip.is_private:
                 raise ProviderError("The provider endpoint is not allowed.")
             validated.append(ip)
 
@@ -315,6 +332,9 @@ class ProviderClient:
     def validate_model_endpoint(self, base_url: str) -> None:
         self._validate_destination(base_url)
 
+    def validate_voicebox_endpoint(self, base_url: str) -> None:
+        self._validate_destination(base_url, voicebox=True)
+
     def discover_models(
         self, base_url: str, api_key: str | None
     ) -> list[dict[str, str]]:
@@ -365,6 +385,45 @@ class ProviderClient:
         if not isinstance(content, str):
             raise ProviderError("The model returned an invalid completion.")
         return content
+
+    def discover_voicebox_voices(self, base_url: str) -> list[dict[str, str]]:
+        destination = self._validate_destination(base_url, voicebox=True)
+        payload = self._json_request(destination, "GET", "profiles")
+        if not isinstance(payload, list):
+            raise ProviderError("Voicebox returned an invalid profile list.")
+        voices = {
+            item["id"]: {"voice_id": item["id"], "name": item["name"]}
+            for item in payload
+            if isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and 0 < len(item["id"]) <= 200
+            and isinstance(item.get("name"), str)
+            and 0 < len(item["name"]) <= 200
+        }
+        return sorted(
+            voices.values(), key=lambda item: (item["name"], item["voice_id"])
+        )
+
+    def discover_voicebox_models(self, base_url: str) -> list[dict[str, str]]:
+        destination = self._validate_destination(base_url, voicebox=True)
+        payload = self._json_request(destination, "GET", "v1/models")
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ProviderError("Voicebox returned an invalid model list.")
+        models = {}
+        for item in payload["data"]:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("id"), str)
+                and 0 < len(item["id"]) <= 200
+            ):
+                description = item.get("description")
+                models[item["id"]] = {
+                    "model_id": item["id"],
+                    "name": description[:200]
+                    if isinstance(description, str)
+                    else item["id"],
+                }
+        return sorted(models.values(), key=lambda item: item["model_id"])
 
     def discover_voices(self, base_url: str, api_key: str) -> list[dict[str, Any]]:
         destination = self._validate_destination(base_url, elevenlabs=True)
@@ -449,24 +508,43 @@ class ProviderClient:
         self,
         *,
         base_url: str,
-        api_key: str,
+        api_key: str | None,
         voice_id: str,
         text: str,
         model_id: str,
         output_format: str,
+        provider: str = "elevenlabs",
     ) -> bytes:
-        # Full reviews take longer than metadata discovery or short previews.
-        destination = self._validate_destination(
-            base_url, elevenlabs=True, total_timeout=self._speech_total_timeout
+        if provider not in {"elevenlabs", "voicebox"}:
+            raise ProviderError("The voice provider is invalid.")
+        if (
+            self._transport is not None or self._speech_transport is not None
+        ) and not isinstance(self._speech_transport, httpx.AsyncBaseTransport):
+            raise ProviderError("Speech requires an async-compatible HTTP transport.")
+        elevenlabs = provider == "elevenlabs"
+        speech_timeout = (
+            self._speech_total_timeout
+            if elevenlabs
+            else self._voicebox_speech_total_timeout
         )
-        if not voice_id or len(voice_id) > 200 or output_format != "mp3_44100_128":
+        # Local CPU synthesis needs its own bounded budget, not the metadata limit.
+        destination = self._validate_destination(
+            base_url,
+            elevenlabs=elevenlabs,
+            voicebox=not elevenlabs,
+            total_timeout=speech_timeout,
+        )
+        expected_format = "mp3_44100_128" if elevenlabs else "mp3"
+        if not voice_id or len(voice_id) > 200 or output_format != expected_format:
             raise ProviderError("The voice settings are invalid.")
-        with self._provider_slot(deadline=destination.deadline, elevenlabs=True):
+        with self._provider_slot(deadline=destination.deadline, elevenlabs=elevenlabs):
             # Keep the public API synchronous, but cancel blocked network I/O at
             # the deadline instead of abandoning a still-running worker thread.
             return asyncio.run(
                 self._synthesize_speech(
                     destination,
+                    provider=provider,
+                    speech_timeout=speech_timeout,
                     api_key=api_key,
                     voice_id=voice_id,
                     text=text,
@@ -479,60 +557,90 @@ class ProviderClient:
         self,
         destination: _Destination,
         *,
-        api_key: str,
+        provider: str,
+        speech_timeout: float,
+        api_key: str | None,
         voice_id: str,
         text: str,
         model_id: str,
         output_format: str,
     ) -> bytes:
-        suffix = f"v1/text-to-speech/{quote(voice_id, safe='')}"
+        elevenlabs = provider == "elevenlabs"
+        prefix = "ElevenLabs" if elevenlabs else "Voicebox"
+        headers = {"Accept": "audio/mpeg"}
+        if elevenlabs:
+            headers["xi-api-key"] = api_key or ""
+            suffix = f"v1/text-to-speech/{quote(voice_id, safe='')}"
+            query = {"output_format": output_format}
+            body = {"text": text, "model_id": model_id}
+        else:
+            suffix = "v1/audio/speech"
+            query = None
+            body = {
+                "input": text,
+                "voice": voice_id,
+                "model": model_id,
+                "response_format": "mp3",
+            }
         content = bytearray()
         try:
             # A per-call client is closed before asyncio.run closes its loop and
             # before the synchronous wrapper releases provider capacity.
             async with httpx.AsyncClient(
-                transport=self._transport, follow_redirects=False
+                transport=self._speech_transport, follow_redirects=False
             ) as client:
                 headers, timeout, extensions = self._request_options(
                     destination,
-                    {"Accept": "audio/mpeg", "xi-api-key": api_key},
-                    elevenlabs=True,
-                    read_timeout=self._speech_total_timeout,
+                    headers,
+                    elevenlabs=elevenlabs,
+                    read_timeout=speech_timeout,
                 )
                 async with (
                     asyncio.timeout(
-                        self._remaining(destination.deadline, elevenlabs=True)
+                        self._remaining(destination.deadline, elevenlabs=elevenlabs)
                     ),
                     client.stream(
                         "POST",
-                        self._url(
-                            destination, suffix, {"output_format": output_format}
-                        ),
+                        self._url(destination, suffix, query),
                         headers=headers,
-                        json={"text": text, "model_id": model_id},
+                        json=body,
                         timeout=timeout,
                         extensions=extensions,
                     ) as response,
                 ):
-                    self._remaining(destination.deadline, elevenlabs=True)
+                    self._remaining(destination.deadline, elevenlabs=elevenlabs)
                     if response.is_redirect:
                         raise ProviderError(
-                            "ElevenLabs returned a redirect, which is not allowed."
+                            f"{prefix} returned a redirect, which is not allowed."
                         )
                     if response.status_code >= 400:
                         raise ProviderError(
-                            f"ElevenLabs returned HTTP {response.status_code}."
+                            f"{prefix} returned HTTP {response.status_code}."
                         )
+                    if (
+                        not elevenlabs
+                        and response.headers.get("content-type", "")
+                        .split(";", 1)[0]
+                        .strip()
+                        .lower()
+                        != "audio/mpeg"
+                    ):
+                        raise ProviderError("Voicebox returned invalid audio.")
                     async for chunk in response.aiter_bytes():
-                        self._remaining(destination.deadline, elevenlabs=True)
+                        self._remaining(destination.deadline, elevenlabs=elevenlabs)
                         content.extend(chunk)
                         if len(content) > MAX_AUDIO_BYTES:
-                            raise ProviderError("ElevenLabs returned invalid audio.")
-                    self._remaining(destination.deadline, elevenlabs=True)
+                            raise ProviderError(f"{prefix} returned invalid audio.")
+                    self._remaining(destination.deadline, elevenlabs=elevenlabs)
         except (TimeoutError, httpx.TimeoutException) as error:
-            raise ProviderError("ElevenLabs timed out.") from error
+            raise ProviderError(f"{prefix} timed out.") from error
         except httpx.HTTPError as error:
-            raise ProviderError("ElevenLabs could not be reached.") from error
+            raise ProviderError(f"{prefix} could not be reached.") from error
         if not content:
-            raise ProviderError("ElevenLabs returned invalid audio.")
+            raise ProviderError(f"{prefix} returned invalid audio.")
+        if not elevenlabs and not (
+            content.startswith(b"ID3")
+            or (len(content) >= 2 and content[0] == 0xFF and content[1] & 0xE0 == 0xE0)
+        ):
+            raise ProviderError("Voicebox returned invalid audio.")
         return bytes(content)

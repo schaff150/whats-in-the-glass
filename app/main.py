@@ -19,6 +19,7 @@ from app.models import (
     ModelSettingsUpdate,
     ProviderProbeRequest,
     VoicePreviewRequest,
+    VoiceProbeRequest,
     VoiceSettingsUpdate,
     validate_base_url,
 )
@@ -71,6 +72,7 @@ def create_app(
     provider_transport: httpx.BaseTransport | None = None,
     provider_resolver=socket.getaddrinfo,
     model_host_allowlist: set[str] | None = None,
+    voicebox_host_allowlist: set[str] | None = None,
     analysis_rate_limit: int | None = None,
     narration_rate_limit: int | None = None,
     rate_limit_window: float | None = None,
@@ -78,6 +80,7 @@ def create_app(
     provider_max_concurrency: int | None = None,
     provider_request_budget: int | None = None,
     provider_total_timeout: float | None = None,
+    provider_speech_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     resolved_data_dir = Path(data_dir or os.environ.get("WITG_DATA_DIR", "data"))
     if secret_key is None:
@@ -90,8 +93,19 @@ def create_app(
             for host in os.environ.get("WITG_MODEL_HOST_ALLOWLIST", "").split(",")
             if host.strip()
         }
+    if voicebox_host_allowlist is None:
+        voicebox_host_allowlist = {
+            host.strip()
+            for host in os.environ.get("WITG_VOICEBOX_HOST_ALLOWLIST", "").split(",")
+            if host.strip()
+        }
     providers = ProviderClient(
+        voicebox_host_allowlist=voicebox_host_allowlist,
+        voicebox_speech_total_timeout=_env_number(
+            "WITG_VOICEBOX_SPEECH_TIMEOUT_SECONDS", 600.0, float, 1.0, 1800.0
+        ),
         transport=provider_transport,
+        speech_transport=provider_speech_transport,
         resolver=provider_resolver,
         model_host_allowlist=model_host_allowlist,
         max_concurrency=provider_max_concurrency
@@ -241,8 +255,17 @@ def create_app(
     @app.put("/api/settings/voice")
     def save_voice_settings(update: VoiceSettingsUpdate, request: Request):
         require_same_origin_mutation(request)
+        if update.provider == "voicebox":
+            try:
+                providers.validate_voicebox_endpoint(update.base_url)
+            except ProviderError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="The Voicebox endpoint is not operator-allowlisted.",
+                ) from error
         try:
             settings = database.update_voice_settings(
+                provider=update.provider,
                 base_url=update.base_url,
                 voice_id=update.voice_id,
                 voice_name=update.voice_name,
@@ -284,17 +307,43 @@ def create_app(
         result = discover_models(probe, request)
         return {"ok": True, "models_count": len(result["models"])}
 
-    def _discover_voices(probe: ProviderProbeRequest):
-        settings = database.get_settings().voice
+    def voice_connection(probe: VoiceProbeRequest):
+        saved = database.get_settings().voice
+        provider = probe.provider or saved.provider
         try:
-            target_url, api_key = probe_api_key(
-                probe,
-                settings.base_url,
-                database.get_voice_api_key,
-                elevenlabs=True,
+            target_url = validate_base_url(
+                probe.base_url or saved.base_url,
+                official_hosts=ELEVENLABS_HOSTS if provider == "elevenlabs" else None,
             )
-            if not api_key:
-                raise SecretConfigurationError("Voice key is not configured.")
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail="Invalid provider endpoint."
+            ) from error
+        if provider == "voicebox":
+            if probe.api_key:
+                raise HTTPException(
+                    status_code=422, detail="Voicebox does not use API keys."
+                )
+            return provider, target_url, None
+        api_key = probe.api_key
+        if not api_key:
+            if provider != saved.provider or target_url != validate_base_url(
+                saved.base_url
+            ):
+                raise HTTPException(
+                    status_code=503,
+                    detail="An explicit key is required for an unsaved provider endpoint.",
+                )
+            api_key = database.get_voice_api_key()
+        if not api_key:
+            raise SecretConfigurationError("Voice key is not configured.")
+        return provider, target_url, api_key
+
+    def _discover_voices(probe: VoiceProbeRequest):
+        try:
+            provider, target_url, api_key = voice_connection(probe)
+            if provider == "voicebox":
+                return providers.discover_voicebox_voices(target_url)
             return providers.discover_voices(target_url, api_key)
         except SecretConfigurationError as error:
             raise HTTPException(
@@ -308,24 +357,20 @@ def create_app(
             ) from error
 
     @app.post("/api/settings/voice/voices")
-    def discover_voices(probe: ProviderProbeRequest, request: Request):
+    def discover_voices(probe: VoiceProbeRequest, request: Request):
         require_same_origin_mutation(request)
         return {"voices": _discover_voices(probe)}
 
     @app.post("/api/settings/voice/models")
-    def discover_voice_models(probe: ProviderProbeRequest, request: Request):
+    def discover_voice_models(probe: VoiceProbeRequest, request: Request):
         require_same_origin_mutation(request)
-        settings = database.get_settings().voice
         try:
-            target_url, api_key = probe_api_key(
-                probe,
-                settings.base_url,
-                database.get_voice_api_key,
-                elevenlabs=True,
+            provider, target_url, api_key = voice_connection(probe)
+            models = (
+                providers.discover_voicebox_models(target_url)
+                if provider == "voicebox"
+                else providers.discover_tts_models(target_url, api_key)
             )
-            if not api_key:
-                raise SecretConfigurationError("Voice key is not configured.")
-            models = providers.discover_tts_models(target_url, api_key)
         except SecretConfigurationError as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -339,7 +384,7 @@ def create_app(
         return {"models": models}
 
     @app.post("/api/settings/voice/test")
-    def test_voice_connection(probe: ProviderProbeRequest, request: Request):
+    def test_voice_connection(probe: VoiceProbeRequest, request: Request):
         require_same_origin_mutation(request)
         voices = _discover_voices(probe)
         return {"ok": True, "voices_count": len(voices)}
@@ -348,32 +393,38 @@ def create_app(
     def preview_voice(preview: VoicePreviewRequest, request: Request):
         require_same_origin_mutation(request)
         settings = database.get_settings().voice
-        voice_id = preview.voice_id or settings.voice_id
+        provider = preview.provider or settings.provider
+        voice_id = preview.voice_id or (
+            settings.voice_id if provider == settings.provider else None
+        )
         if not voice_id:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Select an ElevenLabs voice before previewing.",
+                detail="Select a voice before previewing.",
             )
-        probe = ProviderProbeRequest(
+        probe = VoiceProbeRequest(
+            provider=provider,
             base_url=preview.base_url,
             api_key=preview.api_key,
         )
         try:
-            target_url, api_key = probe_api_key(
-                probe,
-                settings.base_url,
-                database.get_voice_api_key,
-                elevenlabs=True,
-            )
-            if not api_key:
-                raise SecretConfigurationError("Voice key is not configured.")
+            provider, target_url, api_key = voice_connection(probe)
             audio = providers.synthesize_speech(
+                provider=provider,
                 base_url=target_url,
                 api_key=api_key,
                 voice_id=voice_id,
                 text=preview.text,
-                model_id=preview.tts_model_id or settings.tts_model_id,
-                output_format=preview.output_format or settings.output_format,
+                model_id=preview.tts_model_id
+                or (
+                    settings.tts_model_id
+                    if provider == settings.provider
+                    else "luxtts"
+                    if provider == "voicebox"
+                    else "eleven_multilingual_v2"
+                ),
+                output_format=preview.output_format
+                or ("mp3" if provider == "voicebox" else "mp3_44100_128"),
             )
         except SecretConfigurationError as error:
             raise HTTPException(

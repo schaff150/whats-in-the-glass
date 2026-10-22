@@ -1,13 +1,13 @@
 # What’s in the Glass?
 
-A LAN-local spirits guide with the mobile **Leather Ledger** interface. It can run as an honest deterministic demo, or use an household-configured OpenAI-compatible chat-completions model and ElevenLabs voice from the in-app **Connections** view.
+A LAN-local spirits guide with the mobile **Leather Ledger** interface. It can run as an honest deterministic demo, or use an household-configured OpenAI-compatible chat-completions model and local Voicebox (or optional ElevenLabs) voice from the in-app **Connections** view.
 
 ## Current milestone
 
 - FastAPI, SQLite, and a no-build mobile PWA on port 8787.
 - Text and JPEG/PNG/WebP bottle analysis.
 - OpenAI-compatible `GET /models` discovery, manual model IDs, connection testing, and strict JSON chat-completions analysis.
-- ElevenLabs voice discovery, connection testing, preview, and on-demand cached narration for saved analyses.
+- Voicebox profile/model discovery, keyless local preview, and on-demand cached MP3 narration, with optional ElevenLabs support. There is no automatic ElevenLabs fallback.
 - Write-only provider keys encrypted with AES-256-GCM under an externally mounted 32-byte master key.
 - Connections are immediately available on the trusted LAN; write operations retain exact Origin/Host validation.
 - Demo fallback when no real model is configured. Generic OpenAI-compatible APIs do not standardize grounded search, so configured-model analyses intentionally return `sources: []` rather than fabricating citations.
@@ -50,7 +50,7 @@ WITG_MODEL_HOST_ALLOWLIST=modelbox.home.arpa,10.0.0.25
 
 Every outbound call resolves once under its total deadline, validates every returned address, and connects to the chosen validated IP. The original hostname remains in `Host` and TLS SNI, redirects are disabled, and `Connection: close` prevents a pooled IP connection from crossing hostname boundaries. This closes the validation/connection DNS-rebinding gap rather than relying on a second lookup. ElevenLabs remains restricted to its documented HTTPS origins on standard port 443.
 
-Changing a model or voice endpoint clears its saved key unless a replacement is supplied in that same save. Discovery, test, and preview use a saved key only when the canonical requested URL exactly matches the saved URL; a different unsaved URL requires an explicit unsaved key.
+Changing a model or voice endpoint clears its saved key unless a replacement is supplied in that same save. Switching to Voicebox always clears the old voice key and never decrypts or forwards an ElevenLabs credential. Discovery, test, and preview use a saved key only when the canonical requested URL exactly matches the saved URL; a different unsaved URL requires an explicit unsaved key.
 
 ## Provider limits
 
@@ -59,15 +59,25 @@ The process applies conservative in-memory controls before billable provider wor
 - `WITG_PROVIDER_MAX_CONCURRENCY` (default `4`) limits simultaneous outbound calls globally.
 - `WITG_PROVIDER_REQUEST_BUDGET` (default `120`) and `WITG_PROVIDER_BUDGET_WINDOW_SECONDS` (default `60`) bound outbound requests per process window.
 - `WITG_PROVIDER_TOTAL_TIMEOUT_SECONDS` (default `20`) is a monotonic wall-clock deadline for metadata and model requests covering DNS, connection, and streamed response bodies; the read inactivity limit remains 15 seconds.
-- Speech synthesis (including previews) has its own 120-second total/read budget, with connect/write limits unchanged. The total budget includes DNS and capacity waiting; expiry cancels blocked network reads and closes the connection before releasing provider capacity. Full reviews can take longer than 15 seconds before ElevenLabs responds; a successful connection test only lists voices and does not exercise full-length synthesis.
+- ElevenLabs speech synthesis (including previews) has its own 120-second total/read budget, with connect/write limits unchanged. The total budget includes DNS and capacity waiting; expiry cancels blocked network reads and closes the connection before releasing provider capacity. Full reviews can take longer than 15 seconds before ElevenLabs responds; a successful connection test only lists voices and does not exercise full-length synthesis.
 - `WITG_ANALYSIS_RATE_LIMIT` (default `10`) and `WITG_NARRATION_RATE_LIMIT` (default `6`) apply per trusted client identity during `WITG_RATE_LIMIT_WINDOW_SECONDS` (default `60`).
+- Voicebox speech has a separate `WITG_VOICEBOX_SPEECH_TIMEOUT_SECONDS` total/read budget (default `600`, allowed range `1`–`1800` seconds) for local CPU generation. Discovery retains the normal metadata timeout. The deadline cancels network I/O and releases capacity on expiry.
 - Identical concurrent narration requests are single-flight by analysis/settings fingerprint, so only one TTS call is made.
 
 These counters, windows, sessions, and single-flight coordination are process-local and **resets when the process restarts**. Multi-worker or multi-replica deployments need a shared limiter/budget service before public exposure. Limit responses are sanitized `429` or `503` errors; they do not include provider bodies or keys.
 
+### Injecting provider transports
+
+`ProviderClient(transport=...)` / `create_app(provider_transport=...)` accepts an `httpx.BaseTransport` for synchronous metadata/model requests. Speech uses native async HTTP by default; inject its transport separately with `ProviderClient(speech_transport=...)` / `create_app(provider_speech_transport=...)`, accepting `httpx.AsyncBaseTransport`.
+
+For compatibility, a legacy transport implementing **both** interfaces (such as `httpx.MockTransport`) also handles speech unless an explicit speech transport overrides it. A sync-only transport without a compatible async speech transport still serves metadata, but speech fails closed with a sanitized `ProviderError` (preview/narration API responses are sanitized `502`s). It never silently falls back to real speech networking or runs blocking transport I/O in an abandoned worker thread.
+
+Speech enters and closes a per-call async client and its injected transport on that call's event loop, before releasing provider capacity. Inject a transport compatible with that lifecycle and cancellable async I/O; the existing ElevenLabs/Voicebox deadlines and response limits still apply.
+
 ## Requirements
 
 - Python 3.11+
+- Node.js 18+ for the offline frontend runtime tests (not needed by the app container)
 - [uv](https://docs.astral.sh/uv/)
 - Docker with Compose only for the container path
 
@@ -98,7 +108,9 @@ Open <http://localhost:8787/> for demo development and check <http://localhost:8
 
 1. Open **Connections** on the trusted LAN.
 2. Configure an OpenAI-compatible HTTPS base URL. Refresh models or type a model ID manually, optionally test, then save.
-3. Configure an official ElevenLabs origin and write-only key. Refresh voices and official TTS models, select each, preview/test with the complete unsaved selection, then save.
+3. For local narration choose **Voicebox**, use its root URL (for DadServer, `http://192.168.0.87:17600`, without `/v1`), refresh voices and select **Hamish**, then choose `luxtts` and MP3. Test/preview and save; no API key is needed. First allowlist that exact LAN host with `WITG_VOICEBOX_HOST_ALLOWLIST=192.168.0.87` in the container environment (or via Compose). Voicebox must already have the model downloaded and a compatible voice profile.
+   - ElevenLabs remains an explicit alternative: choose it, use an official API origin and a write-only key, then refresh/select its voice and TTS model. It is never used as a fallback when Voicebox fails.
+   - Existing saved reviews and audio remain available. Newly requested narration uses the selected provider; prior audio is not bulk-regenerated. See `docs/voicebox.md` for migration and rollback.
 4. Submit bottle text or a photo. A complete model configuration uses `POST {base_url}/chat/completions`; otherwise the deterministic demo handles it.
 5. Open a saved result and tap narration. Audio is generated on demand, cached by analysis text plus voice/TTS settings, and served only through opaque database-referenced URLs.
 

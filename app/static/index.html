@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#4b2e22">
   <meta name="description" content="A private, LAN-local spirits guide.">
   <title>What’s in the Glass?</title>
-  <link rel="stylesheet" href="/static/styles.css?v=7">
+  <link rel="stylesheet" href="/static/styles.css?v=8">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/icons/favicon.ico">
   <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
-  <script src="/static/app.js?v=7" defer></script>
+  <script src="/static/app.js?v=8" defer></script>
 </head>
 <body>
   <div class="phone">
@@ -154,19 +154,28 @@
           </form>
 
           <form id="voiceSettingsForm" class="connection-card">
-            <span class="eyebrow">Voice provider</span><h2>ElevenLabs</h2>
-            <label for="voiceBaseUrl">Base URL</label>
-            <select id="voiceBaseUrl">
-              <option value="https://api.elevenlabs.io">Global</option>
-              <option value="https://api.us.elevenlabs.io">United States</option>
-              <option value="https://api.eu.residency.elevenlabs.io">EU residency</option>
-              <option value="https://api.in.residency.elevenlabs.io">India residency</option>
-              <option value="https://api.sg.residency.elevenlabs.io">Singapore residency</option>
+            <span class="eyebrow">Voice provider</span><h2 id="voiceProviderTitle">ElevenLabs</h2>
+            <label for="voiceProvider">Provider</label>
+            <select id="voiceProvider">
+              <option value="elevenlabs">ElevenLabs (cloud)</option>
+              <option value="voicebox">Voicebox (local, no API key)</option>
             </select>
-            <label for="voiceApiKey">API key <span>(write-only)</span></label>
-            <input id="voiceApiKey" type="password" autocomplete="off" maxlength="4096">
-            <p class="field-help">Blank preserves the saved key. Changing the endpoint clears it unless a replacement is supplied.</p>
-            <button id="clearVoiceKey" class="secondary" type="button">Clear saved voice key</button>
+            <label for="voiceBaseUrl">Base URL</label>
+            <input id="voiceBaseUrl" type="url" inputmode="url" list="voiceBaseUrlOptions" value="https://api.elevenlabs.io" aria-describedby="voiceEndpointHelp" required>
+            <datalist id="voiceBaseUrlOptions">
+              <option value="https://api.elevenlabs.io" label="Global"></option>
+              <option value="https://api.us.elevenlabs.io" label="United States"></option>
+              <option value="https://api.eu.residency.elevenlabs.io" label="EU residency"></option>
+              <option value="https://api.in.residency.elevenlabs.io" label="India residency"></option>
+              <option value="https://api.sg.residency.elevenlabs.io" label="Singapore residency"></option>
+            </datalist>
+            <p id="voiceEndpointHelp" class="field-help">Use an official ElevenLabs API origin.</p>
+            <div id="voiceKeyControls">
+              <label for="voiceApiKey">API key <span>(write-only)</span></label>
+              <input id="voiceApiKey" type="password" autocomplete="off" maxlength="4096">
+              <p class="field-help">Blank preserves the saved key. Changing the endpoint clears it unless a replacement is supplied.</p>
+              <button id="clearVoiceKey" class="secondary" type="button">Clear saved voice key</button>
+            </div>
             <label for="voiceId">Voice</label>
             <select id="voiceId"></select>
             <label for="ttsModelId">TTS model</label>
