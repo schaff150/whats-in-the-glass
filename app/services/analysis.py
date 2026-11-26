@@ -214,11 +214,15 @@ class ConfiguredAnalysisService:
             },
             {"role": "user", "content": user_content},
         ]
+        # One budget covers the first completion and any repair retry, so a
+        # slow model cannot double the worst-case analysis time.
+        deadline = self._providers.analysis_deadline()
         raw = self._providers.chat_completion(
             base_url=settings.base_url,
             api_key=api_key,
             model_id=settings.model_id,
             messages=messages,
+            deadline=deadline,
         )
         try:
             payload = _AnalysisPayload.model_validate(json.loads(raw))
@@ -238,6 +242,7 @@ class ConfiguredAnalysisService:
                         ),
                     },
                 ],
+                deadline=deadline,
             )
             try:
                 payload = _AnalysisPayload.model_validate(json.loads(repaired))

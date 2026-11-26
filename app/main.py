@@ -117,6 +117,10 @@ def create_app(
         ),
         total_timeout=provider_total_timeout
         or _env_number("WITG_PROVIDER_TOTAL_TIMEOUT_SECONDS", 20.0, float, 1.0, 300.0),
+        analysis_total_timeout=_env_number(
+            "WITG_ANALYSIS_TIMEOUT_SECONDS", 90.0, float, 5.0, 600.0
+        ),
+        reasoning_effort=os.environ.get("WITG_MODEL_REASONING_EFFORT", "low"),
     )
     analysis_limiter = PerClientRateLimiter(
         analysis_rate_limit

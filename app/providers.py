@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import json
+import logging
 import socket
 import threading
 import time
@@ -20,6 +21,10 @@ from app.models import ELEVENLABS_HOSTS, validate_base_url
 MAX_JSON_BYTES = 1024 * 1024
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 MAX_VOICE_PAGES = 10
+# OpenAI-compatible ``reasoning_effort`` values. Gemini's compatibility layer maps
+# them to thinking levels; not every model accepts every level.
+REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
+logger = logging.getLogger(__name__)
 _METADATA_ADDRESSES = {
     ipaddress.ip_address("169.254.169.254"),
     ipaddress.ip_address("169.254.170.2"),
@@ -38,6 +43,14 @@ class ProviderCapacityError(ProviderError):
 
 class ProviderRateLimitError(ProviderError):
     """The configured in-process provider request budget is exhausted."""
+
+
+class ProviderHTTPError(ProviderError):
+    """The provider answered with a sanitized HTTP error status."""
+
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,8 @@ class ProviderClient:
         voicebox_speech_total_timeout: float = 600.0,
         total_timeout: float = 20.0,
         speech_total_timeout: float = 120.0,
+        analysis_total_timeout: float = 90.0,
+        reasoning_effort: str | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         max_concurrency: int = 4,
         capacity_wait_timeout: float = 1.0,
@@ -76,6 +91,20 @@ class ProviderClient:
         self._voicebox_speech_total_timeout = voicebox_speech_total_timeout
         self._total_timeout = total_timeout
         self._speech_total_timeout = speech_total_timeout
+        self._analysis_total_timeout = analysis_total_timeout
+        effort = (reasoning_effort or "").strip().casefold()
+        if effort == "off":
+            effort = ""
+        if effort and effort not in REASONING_EFFORTS:
+            logger.warning(
+                "Ignoring unknown model reasoning effort %r; expected one of %s.",
+                effort,
+                ", ".join(sorted(REASONING_EFFORTS)),
+            )
+        self._reasoning_effort = effort if effort in REASONING_EFFORTS else None
+        # (base_url, model_id) pairs whose provider rejected reasoning_effort.
+        self._effort_rejected: set[tuple[str, str]] = set()
+        self._effort_rejected_lock = threading.Lock()
         self._monotonic = monotonic
         self._capacity = threading.BoundedSemaphore(max(1, max_concurrency))
         self._capacity_wait_timeout = max(0.0, capacity_wait_timeout)
@@ -121,10 +150,12 @@ class ProviderClient:
         elevenlabs: bool = False,
         voicebox: bool = False,
         total_timeout: float | None = None,
+        deadline: float | None = None,
     ) -> _Destination:
-        deadline = self._monotonic() + (
-            self._total_timeout if total_timeout is None else total_timeout
-        )
+        if deadline is None:
+            deadline = self._monotonic() + (
+                self._total_timeout if total_timeout is None else total_timeout
+            )
         try:
             clean = validate_base_url(
                 base_url, official_hosts=ELEVENLABS_HOSTS if elevenlabs else None
@@ -282,9 +313,10 @@ class ProviderClient:
         body: dict[str, Any] | None = None,
         query: dict[str, str] | None = None,
         elevenlabs: bool = False,
+        read_timeout: float = 15.0,
     ) -> Any:
         request_headers, timeout, extensions = self._request_options(
-            destination, headers, elevenlabs=elevenlabs
+            destination, headers, elevenlabs=elevenlabs, read_timeout=read_timeout
         )
         content = bytearray()
         try:
@@ -306,8 +338,9 @@ class ProviderClient:
                     )
                 if response.status_code >= 400:
                     prefix = "ElevenLabs" if elevenlabs else "The provider"
-                    raise ProviderError(
-                        f"{prefix} returned HTTP {response.status_code}."
+                    raise ProviderHTTPError(
+                        f"{prefix} returned HTTP {response.status_code}.",
+                        response.status_code,
                     )
                 for chunk in response.iter_bytes():
                     self._remaining(destination.deadline, elevenlabs=elevenlabs)
@@ -354,6 +387,10 @@ class ProviderClient:
         }
         return [{"id": model_id} for model_id in sorted(ids)]
 
+    def analysis_deadline(self) -> float:
+        """Return one monotonic deadline for a whole analysis (all completions)."""
+        return self._monotonic() + self._analysis_total_timeout
+
     def chat_completion(
         self,
         *,
@@ -361,23 +398,65 @@ class ProviderClient:
         api_key: str | None,
         model_id: str,
         messages: list[dict[str, Any]],
+        deadline: float | None = None,
     ) -> str:
-        destination = self._validate_destination(base_url)
+        """Run one JSON chat completion.
+
+        A full briefing is generated before the first response byte arrives, so
+        completions get their own total deadline and matching read-inactivity
+        limit; discovery and connection tests keep the shorter metadata limits.
+        Pass ``deadline`` (from ``analysis_deadline()``) to share one budget
+        across several completions, such as an analysis and its repair retry.
+        """
+        destination = self._validate_destination(
+            base_url,
+            total_timeout=self._analysis_total_timeout,
+            deadline=deadline,
+        )
         headers = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        payload = self._json_request(
-            destination,
-            "POST",
-            "chat/completions",
-            headers=headers,
-            body={
-                "model": model_id,
-                "messages": messages,
-                "response_format": {"type": "json_object"},
-                "temperature": 0.2,
-            },
-        )
+        body: dict[str, Any] = {
+            "model": model_id,
+            "messages": messages,
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
+        }
+        effort_key = (base_url.strip().rstrip("/"), model_id)
+        with self._effort_rejected_lock:
+            effort_known_rejected = effort_key in self._effort_rejected
+        if self._reasoning_effort and not effort_known_rejected:
+            body["reasoning_effort"] = self._reasoning_effort
+
+        def send() -> Any:
+            return self._json_request(
+                destination,
+                "POST",
+                "chat/completions",
+                headers=headers,
+                body=body,
+                read_timeout=self._analysis_total_timeout,
+            )
+
+        try:
+            payload = send()
+        except ProviderHTTPError as error:
+            # Some models or compatible servers reject reasoning_effort (or a
+            # particular level). Retry once without it, within the same deadline.
+            if error.status_code != 400 or "reasoning_effort" not in body:
+                raise
+            rejected_effort = body.pop("reasoning_effort")
+            payload = send()
+            # Only remember the rejection once the plain request has succeeded,
+            # so an unrelated 400 (bad image, bad model id) is not misattributed.
+            with self._effort_rejected_lock:
+                self._effort_rejected.add(effort_key)
+            logger.warning(
+                "Model %r rejected reasoning_effort=%r; omitting it for this model "
+                "until restart.",
+                model_id,
+                rejected_effort,
+            )
         try:
             content = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
