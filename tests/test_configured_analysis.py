@@ -90,9 +90,9 @@ def test_configured_text_analysis_uses_chat_completions_and_never_fabricates_sou
     assert "step back in quality" in prompt
     assert "Drinker: Me" in prompt
     assert "not a label transcription or terse catalogue entry" in prompt
-    assert "Overview: 60–95 words" in prompt
-    assert "Context: 85–145 words" in prompt
-    assert "Tasting notes: 60–105 words" in prompt
+    assert "Overview: 40–65 words" in prompt
+    assert "Context: 55–95 words" in prompt
+    assert "Tasting notes: 40–70 words" in prompt
     assert "These word ranges are flexible guides, not hard limits" in prompt
     assert "serving suggestion" in prompt
     assert "Do not invent" in prompt
@@ -270,3 +270,64 @@ def test_malformed_model_output_returns_sanitized_502_without_saving(tmp_path):
     assert "malformed-key-canary" not in response.text
     assert "secret-body-canary" not in response.text
     assert app.state.database.list_analyses() == []
+
+
+def test_a_third_shorter_briefing_is_accepted_without_a_repair_retry(tmp_path):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        payload = substantive_payload(
+            overview=" ".join(["overview"] * 35),
+            context=" ".join(["context"] * 50),
+            tasting_notes=" ".join(["tasting"] * 35),
+        )
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+        )
+
+    providers = ProviderClient(
+        transport=httpx.MockTransport(handler), resolver=public_resolver
+    )
+    service = ConfiguredAnalysisService(configured_database(tmp_path), providers)
+    result = service.analyze("Me", "Known bottle", photo=None)
+
+    assert calls == 1
+    assert len(result.context.split()) == 50
+
+
+def test_null_or_numeric_short_facts_are_kept_as_text(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = substantive_payload(age_statement=None, abv=41.4, region="  ")
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+        )
+
+    providers = ProviderClient(
+        transport=httpx.MockTransport(handler), resolver=public_resolver
+    )
+    service = ConfiguredAnalysisService(configured_database(tmp_path), providers)
+    result = service.analyze("Me", "Hendrick's Gin", photo=None)
+
+    assert result.age_statement == "Not stated"
+    assert result.abv == "41.4"
+    assert result.region == "Not stated"
+
+
+def test_non_text_short_facts_are_still_rejected(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = substantive_payload(abv={"value": 40}, style=True)
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+        )
+
+    providers = ProviderClient(
+        transport=httpx.MockTransport(handler), resolver=public_resolver
+    )
+    service = ConfiguredAnalysisService(configured_database(tmp_path), providers)
+    import pytest
+    from app.providers import ProviderError
+
+    with pytest.raises(ProviderError, match="invalid analysis"):
+        service.analyze("Me", "Bottle", photo=None)

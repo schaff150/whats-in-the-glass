@@ -3,7 +3,14 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.db import Database, SecretConfigurationError
 from app.providers import ProviderClient, ProviderError
@@ -122,6 +129,20 @@ class _AnalysisPayload(BaseModel):
     tasting_notes: str = Field(min_length=1, max_length=5000)
     sources: object = None
 
+    @field_validator("region", "age_statement", "abv", "style", mode="before")
+    @classmethod
+    def short_fact_as_text(cls, value):
+        # Models return null for facts that do not apply (a gin has no age
+        # statement) or a bare number for ABV. Keep the briefing rather than
+        # rejecting it: null becomes "Not stated" and numbers become text.
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return "Not stated"
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return f"{value:g}"
+        return value
+
     @model_validator(mode="after")
     def briefing_is_substantive(self):
         section_words = {
@@ -130,10 +151,10 @@ class _AnalysisPayload(BaseModel):
             "tasting_notes": len(self.tasting_notes.split()),
         }
         if (
-            section_words["overview"] < 45
-            or section_words["context"] < 65
-            or section_words["tasting_notes"] < 45
-            or sum(section_words.values()) < 180
+            section_words["overview"] < 30
+            or section_words["context"] < 40
+            or section_words["tasting_notes"] < 30
+            or sum(section_words.values()) < 120
         ):
             raise ValueError("The analysis briefing is too brief.")
         return self
@@ -174,11 +195,11 @@ class ConfiguredAnalysisService:
             "region, "
             "age_statement, abv, style, overview, context, tasting_notes, and sources. "
             "Write a substantive specialist briefing, not a label transcription or "
-            "terse catalogue entry. Overview: 60–95 words covering what it is, who "
-            "made or bottled it, and the most useful defining facts. Context: 85–145 "
+            "terse catalogue entry. Overview: 40–65 words covering what it is, who "
+            "made or bottled it, and the most useful defining facts. Context: 55–95 "
             "words explaining the producer, origin, production or maturation, history, "
             "and why this expression is interesting; adapt those topics sensibly for "
-            "whisky, gin, wine, beer, or another drink. Tasting notes: 60–105 words "
+            "whisky, gin, wine, beer, or another drink. Tasting notes: 40–70 words "
             "covering aroma, palate, finish, likely texture, and a practical serving "
             "suggestion. These word ranges are flexible guides, not hard limits; "
             "keep each section a little more succinct without losing its useful detail. "
